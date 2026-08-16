@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crossplay Board Analyzer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 20px; }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 20px; }
+  .input-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .input-row input { flex: 1; min-width: 200px; padding: 10px 14px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; }
+  .input-row input:focus { outline: none; border-color: #4a6fa5; }
+  button { padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.95rem; cursor: pointer; font-weight: 600; }
+  #analyzeBtn { background: #4a6fa5; color: #fff; }
+  #analyzeBtn:hover { background: #5a7fb5; }
+  #analyzeBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .key-row { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .key-row input { width: 340px; padding: 10px 14px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; font-family: monospace; }
+  .key-row label { font-size: 0.85rem; color: #888; }
+  .key-row .save-btn { background: #2d4a22; color: #afd89a; padding: 6px 14px; font-size: 0.8rem; }
+  .stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat { background: #16213e; border: 1px solid #333; border-radius: 8px; padding: 12px 20px; min-width: 120px; text-align: center; }
+  .stat .val { font-size: 1.5rem; font-weight: 700; color: #fff; }
+  .stat .lbl { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+  .content { display: flex; gap: 20px; flex-wrap: wrap; }
+  .board-wrap { flex: 1; min-width: 300px; }
+  .words-wrap { width: 260px; flex-shrink: 0; }
+  table.board { border-collapse: collapse; font-family: 'Courier New', monospace; font-size: 14px; }
+  table.board th, table.board td { width: 28px; height: 28px; text-align: center; border: 1px solid #333; padding: 0; }
+  table.board th { background: #16213e; color: #888; font-size: 11px; font-weight: 400; }
+  table.board td.tile { background: #2980b9; color: #fff; font-weight: 700; }
+  table.board td.blank-tile { background: #2980b9; color: #f0d060; font-weight: 700; font-style: italic; }
+  table.board td.empty { background: #1e2d4a; color: #555; font-size: 9px; }
+  table.board td.center { background: #2d1e4a; }
+  .words-wrap h3 { font-size: 1rem; margin-bottom: 8px; color: #fff; }
+  .word-list { max-height: 500px; overflow-y: auto; }
+  .word-list table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .word-list th, .word-list td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #222; }
+  .word-list th { color: #888; font-weight: 400; }
+  .word-list td { color: #e0e0e0; }
+  #status { margin-bottom: 12px; font-size: 0.9rem; color: #888; }
+  #status.error { color: #e74c3c; }
+  #status.loading { color: #f39c12; }
+  #status.done { color: #2ecc71; }
+  .drop-zone { border: 2px dashed #333; border-radius: 8px; padding: 20px; text-align: center; color: #555; font-size: 0.85rem; margin-bottom: 16px; transition: border-color 0.2s; }
+  .drop-zone.drag-over { border-color: #4a6fa5; color: #4a6fa5; }
+  .hidden { display: none; }
+  .model-select { display: flex; align-items: center; gap: 8px; }
+  .model-select select { padding: 10px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Crossplay Board Analyzer</h1>
+  <p class="subtitle">Paste a screenshot URL or drop an image to parse the board and find all words.</p>
+
+  <div class="key-row">
+    <label>Anthropic API Key:</label>
+    <input type="password" id="apiKeyInput" placeholder="sk-ant-..." />
+    <button class="save-btn" onclick="saveKey()">Save</button>
+    <label style="font-size:0.75rem;color:#555;">Stored in your browser only.</label>
+  </div>
+
+  <div class="input-row">
+    <input type="text" id="imageUrlInput" placeholder="Paste image URL (imgur, etc.)" />
+    <div class="model-select">
+      <select id="modelSelect">
+        <option value="claude-sonnet-4-6">Sonnet 4.6 (fast, cheap)</option>
+        <option value="claude-opus-4-6">Opus 4.6 (accurate)</option>
+      </select>
+    </div>
+    <button id="analyzeBtn" onclick="analyze()">Analyze Board</button>
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    Or drag & drop / paste (Ctrl+V) a screenshot here
+  </div>
+
+  <div id="status"></div>
+
+  <div class="stats hidden" id="statsRow">
+    <div class="stat"><div class="val" id="p1Score">--</div><div class="lbl" id="p1Name">Player 1</div></div>
+    <div class="stat"><div class="val" id="p2Score">--</div><div class="lbl" id="p2Name">Player 2</div></div>
+    <div class="stat"><div class="val" id="rackDisplay">--</div><div class="lbl">Your Rack</div></div>
+    <div class="stat"><div class="val" id="tileCount">--</div><div class="lbl">Tiles on Board</div></div>
+  </div>
+
+  <div class="content hidden" id="contentRow">
+    <div class="board-wrap" id="boardContainer"></div>
+    <div class="words-wrap" id="wordsContainer"></div>
+  </div>
+</div>
+
+<script>
+// ── API Key persistence ───────────────────────────────────────────────────
+const apiKeyInput = document.getElementById('apiKeyInput');
+const saved = localStorage.getItem('anthropic_api_key');
+if (saved) apiKeyInput.value = saved;
+
+function saveKey() {
+  localStorage.setItem('anthropic_api_key', apiKeyInput.value.trim());
+  setStatus('Key saved.', 'done');
+}
+
+function getKey() {
+  const k = apiKeyInput.value.trim();
+  if (k) localStorage.setItem('anthropic_api_key', k);
+  return k;
+}
+
+// ── Status ────────────────────────────────────────────────────────────────
+function setStatus(msg, cls) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls || '';
+}
+
+// ── Image drop/paste → base64 ─────────────────────────────────────────────
+let base64Image = null;
+
+const dropZone = document.getElementById('dropZone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadFile(file);
+});
+
+document.addEventListener('paste', e => {
+  const items = e.clipboardData.items;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      loadFile(item.getAsFile());
+      return;
+    }
+  }
+});
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    base64Image = { data: reader.result.split(',')[1], media_type: file.type };
+    document.getElementById('imageUrlInput').value = '';
+    dropZone.textContent = 'Image loaded: ' + file.name + ' (' + Math.round(file.size/1024) + ' KB)';
+    setStatus('Image ready. Click Analyze Board.', 'done');
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── Vision prompt (same as the DD app) ────────────────────────────────────
+const VISION_PROMPT = `Analyze this NYT Crossplay board screenshot.
+
+The board is 15x15. TILES are BLUE squares with WHITE letters. EMPTY squares show colored premium labels (2L, 3L, 2W, 3W) or are plain.
+Blank tiles (superscript 0) should be lowercase in the grid.
+
+Output the board as a 15x15 text grid. Use '.' for empty squares and the letter for tiles. Each row is exactly 15 characters. Blank tiles use lowercase.
+
+ANCHORS to verify your grid alignment:
+- The center square (row 8, col H) has the NYT logo or a star
+- Row 1 corners and Row 15 corners have 3L premium squares
+- Row 4 and Row 12 corners have 3W premium squares
+
+Output as JSON:
+{
+  "player_score": <int>,
+  "opponent_score": <int>,
+  "player_name": "<string>",
+  "opponent_name": "<string>",
+  "rack": "<letters>",
+  "grid": [
+    "...............",
+    "...............",
+    "... (15 rows of 15 chars each) ..."
+  ]
+}
+
+IMPORTANT: Each grid row must be EXACTLY 15 characters. Check all 4 edges of the board. Do not miss tiles on the right edge (column O).
+Output ONLY the JSON, no other text.`;
+
+// ── Analyze ───────────────────────────────────────────────────────────────
+async function analyze() {
+  const key = getKey();
+  if (!key) { setStatus('Enter your Anthropic API key first.', 'error'); return; }
+
+  const imageUrl = document.getElementById('imageUrlInput').value.trim();
+  if (!imageUrl && !base64Image) { setStatus('Provide an image URL or drop an image.', 'error'); return; }
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  setStatus('Analyzing... (takes ~15-30s)', 'loading');
+
+  const imageContent = base64Image
+    ? { type: 'image', source: { type: 'base64', media_type: base64Image.media_type, data: base64Image.data } }
+    : { type: 'image', source: { type: 'url', url: imageUrl } };
+
+  const model = document.getElementById('modelSelect').value;
+
+  const body = {
+    model: model,
+    max_tokens: 4096,
+    messages: [{
+      role: 'user',
+      content: [ imageContent, { type: 'text', text: VISION_PROMPT } ]
+    }]
+  };
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
+    }
+
+    const data = await resp.json();
+    const text = data.content[0].text;
+
+    // Extract last JSON object (model sometimes outputs multiple)
+    const lastBrace = text.lastIndexOf('}');
+    let depth = 0, start = -1;
+    for (let i = lastBrace; i >= 0; i--) {
+      if (text[i] === '}') depth++;
+      if (text[i] === '{') depth--;
+      if (depth === 0) { start = i; break; }
+    }
+
+    if (start < 0) throw new Error('No JSON found in response');
+    const parsed = JSON.parse(text.substring(start, lastBrace + 1));
+    renderResult(parsed);
+    setStatus('Done. ' + (parsed.grid ? parsed.grid.filter(r => r.replace(/\./g,'').length > 0).length + ' rows with tiles.' : ''), 'done');
+
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Parse & render ────────────────────────────────────────────────────────
+function renderResult(parsed) {
+  // Build tile list from grid
+  const grid = parsed.grid || [];
+  const tiles = [];
+  const cols = 'ABCDEFGHIJKLMNO';
+  for (let r = 0; r < grid.length && r < 15; r++) {
+    const line = grid[r] || '';
+    for (let c = 0; c < 15 && c < line.length; c++) {
+      const ch = line[c];
+      if (ch !== '.') {
+        tiles.push({ letter: ch.toUpperCase(), row: r, col: c, blank: ch === ch.toLowerCase() && ch !== ch.toUpperCase() });
+      }
+    }
+  }
+
+  // Stats
+  document.getElementById('p1Score').textContent = parsed.player_score || '--';
+  document.getElementById('p1Name').textContent = parsed.player_name || 'Player 1';
+  document.getElementById('p2Score').textContent = parsed.opponent_score || '--';
+  document.getElementById('p2Name').textContent = parsed.opponent_name || 'Player 2';
+  document.getElementById('rackDisplay').textContent = parsed.rack || '--';
+  document.getElementById('tileCount').textContent = tiles.length;
+  document.getElementById('statsRow').classList.remove('hidden');
+
+  // Board table
+  const board = [];
+  for (let r = 0; r < 15; r++) board.push(new Array(15).fill(null));
+  for (const t of tiles) board[t.row][t.col] = t;
+
+  let html = '<table class="board"><tr><th></th>';
+  for (const c of cols) html += `<th>${c}</th>`;
+  html += '</tr>';
+  for (let r = 0; r < 15; r++) {
+    html += `<tr><th>${r + 1}</th>`;
+    for (let c = 0; c < 15; c++) {
+      const t = board[r][c];
+      if (t) {
+        const cls = t.blank ? 'blank-tile' : 'tile';
+        html += `<td class="${cls}">${t.letter}</td>`;
+      } else {
+        const isCenter = r === 7 && c === 7;
+        html += `<td class="empty${isCenter ? ' center' : ''}">${isCenter ? '\u2605' : ''}</td>`;
+      }
+    }
+    html += '</tr>';
+  }
+  html += '</table>';
+  document.getElementById('boardContainer').innerHTML = html;
+
+  // Find words
+  const words = [];
+  const g = [];
+  for (let r = 0; r < 15; r++) {
+    g.push([]);
+    for (let c = 0; c < 15; c++) g[r].push(board[r][c] ? board[r][c].letter : '.');
+  }
+
+  // Across
+  for (let r = 0; r < 15; r++) {
+    let c = 0;
+    while (c < 15) {
+      if (g[r][c] !== '.') {
+        const s = c; let w = '';
+        while (c < 15 && g[r][c] !== '.') { w += g[r][c]; c++; }
+        if (w.length >= 2) words.push({ pos: `${r+1}${cols[s]}`, word: w, dir: 'across' });
+      } else c++;
+    }
+  }
+  // Down
+  for (let c = 0; c < 15; c++) {
+    let r = 0;
+    while (r < 15) {
+      if (g[r][c] !== '.') {
+        const s = r; let w = '';
+        while (r < 15 && g[r][c] !== '.') { w += g[r][c]; r++; }
+        if (w.length >= 2) words.push({ pos: `${cols[c]}${s+1}`, word: w, dir: 'down' });
+      } else r++;
+    }
+  }
+
+  let whtml = `<h3>Words Found (${words.length})</h3><div class="word-list"><table><tr><th>Pos</th><th>Word</th><th>Dir</th></tr>`;
+  for (const w of words) whtml += `<tr><td>${w.pos}</td><td><b>${w.word}</b></td><td>${w.dir}</td></tr>`;
+  whtml += '</table></div>';
+  document.getElementById('wordsContainer').innerHTML = whtml;
+  document.getElementById('contentRow').classList.remove('hidden');
+}
+</script>
+</body>
+</html>

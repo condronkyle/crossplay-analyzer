@@ -368,7 +368,7 @@ function buildTileMosaic(canvas, grid, tilePositions) {
     // Mask the superscript point value (small number in top-right corner of tile)
     // Use a small rectangle to avoid covering the main letter
     mctx.fillStyle = '#3a7abd'; // approximate Crossplay tile blue
-    mctx.fillRect(dx + cellSize * 0.65, dy + labelHeight, cellSize * 0.35, cellSize * 0.28);
+    mctx.fillRect(dx + cellSize * 0.65, dy + labelHeight, cellSize * 0.35, cellSize * 0.36);
 
     // Draw thin border around the tile
     mctx.strokeStyle = '#444';
@@ -590,7 +590,7 @@ async function analyzeHybrid(imageSource) {
       rctx.drawImage(cvCanvas, rp.x1, rp.y1, rp.x2 - rp.x1, rp.y2 - rp.y1, dx, rPad + rLabelH, rCellSize, rCellSize);
       // Mask superscript point value (top-right corner of tile)
       rctx.fillStyle = '#3a7abd';
-      rctx.fillRect(dx + rCellSize * 0.65, rPad + rLabelH, rCellSize * 0.35, rCellSize * 0.28);
+      rctx.fillRect(dx + rCellSize * 0.65, rPad + rLabelH, rCellSize * 0.35, rCellSize * 0.36);
     }
   }
 

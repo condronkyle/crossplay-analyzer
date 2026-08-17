@@ -168,6 +168,470 @@ function loadFile(file) {
   reader.readAsDataURL(file);
 }
 
+// ── Hybrid CV+API Board Parsing ───────────────────────────────────────────
+
+function rgbToHsv(r, g, b) {
+  // Returns [H, S, V] in OpenCV convention: H=[0,179], S=[0,255], V=[0,255]
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0, s = max === 0 ? 0 : (d / max) * 255, v = max * 255;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 30;
+    else if (max === g) h = ((b - r) / d + 2) * 30;
+    else h = ((r - g) / d + 4) * 30;
+  }
+  return [Math.round(h), Math.round(s), Math.round(v)];
+}
+
+function isBlueHsv(h, s, v) {
+  return h >= 95 && h <= 135 && s >= 30 && v >= 80;
+}
+
+function detectBoardGrid(imageData, width, height) {
+  // Width prior: board spans ~96% of image width, centered
+  const BOARD_WIDTH_FRAC = 0.96;
+  const cellW = width * BOARD_WIDTH_FRAC / 15;
+  const cellH = cellW; // square cells
+  const gridLeft = (width - 15 * cellW) / 2;
+
+  // Search band: 30%-70% of height for blue pixels
+  const searchTop = Math.floor(height * 0.30);
+  const searchBottom = Math.floor(height * 0.70);
+
+  // Build y-profile of blue pixel density
+  const yProfile = new Float32Array(searchBottom - searchTop);
+  for (let y = searchTop; y < searchBottom; y++) {
+    let blueCount = 0;
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+      if (h >= 95 && h <= 135 && s >= 80 && v >= 80) blueCount++;
+    }
+    yProfile[y - searchTop] = blueCount;
+  }
+
+  // Find first row with significant blue content (>10% of width)
+  const tileRowThresh = width * 0.10;
+  let firstTileY = -1;
+  for (let i = 0; i < yProfile.length; i++) {
+    if (yProfile[i] > tileRowThresh) {
+      firstTileY = i + searchTop;
+      break;
+    }
+  }
+
+  if (firstTileY < 0) {
+    // Fallback: no blue pixels found
+    console.warn('No blue tiles found, using fallback grid');
+    return fallbackGrid(width, height);
+  }
+
+  // Snap grid top: try each possible row offset, pick closest to h*0.29
+  const gridTopMin = height * 0.15;
+  const gridTopMax = height * 0.32;
+  const expectedBoardTop = height * 0.29;
+  let bestGridTop = null;
+  let bestDist = Infinity;
+
+  for (let offset = 0; offset < 15; offset++) {
+    const gridTop = firstTileY - offset * cellH;
+    if (gridTop < gridTopMin || gridTop > gridTopMax) continue;
+    const dist = Math.abs(gridTop - expectedBoardTop);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestGridTop = gridTop;
+    }
+  }
+
+  if (bestGridTop === null) bestGridTop = height * 0.20;
+
+  // Generate grid lines
+  const hGrid = [], vGrid = [];
+  for (let i = 0; i <= 15; i++) {
+    hGrid.push(Math.max(0, Math.min(height - 1, Math.round(bestGridTop + i * cellH))));
+    vGrid.push(Math.max(0, Math.min(width - 1, Math.round(gridLeft + i * cellW))));
+  }
+
+  return { hGrid, vGrid, cellW, cellH };
+}
+
+function fallbackGrid(w, h) {
+  const boardLeft = Math.round(w * 0.04);
+  const boardTop = Math.round(h * 0.28);
+  const cellW = (w * 0.92) / 15;
+  const cellH = ((h * 0.70 - h * 0.28)) / 15;
+  const hGrid = [], vGrid = [];
+  for (let i = 0; i <= 15; i++) {
+    hGrid.push(Math.round(boardTop + i * cellH));
+    vGrid.push(Math.round(boardLeft + i * cellW));
+  }
+  return { hGrid, vGrid, cellW, cellH };
+}
+
+function isTileCell(imageData, width, x1, y1, x2, y2) {
+  // Sample pixels with 8% margin inset
+  const marginX = Math.max(2, Math.round((x2 - x1) * 0.08));
+  const marginY = Math.max(2, Math.round((y2 - y1) * 0.08));
+  const sx1 = x1 + marginX, sy1 = y1 + marginY;
+  const sx2 = x2 - marginX, sy2 = y2 - marginY;
+  if (sx2 <= sx1 || sy2 <= sy1) return false;
+
+  const cellW = sx2 - sx1;
+  const cellH = sy2 - sy1;
+  let blueCount = 0, totalCount = 0;
+  const colHasBlue = new Uint8Array(cellW);
+
+  for (let y = sy1; y < sy2; y++) {
+    for (let x = sx1; x < sx2; x++) {
+      const idx = (y * width + x) * 4;
+      const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+      totalCount++;
+      if (isBlueHsv(h, s, v)) {
+        blueCount++;
+        colHasBlue[x - sx1] = 1;
+      }
+    }
+  }
+
+  const blueRatio = blueCount / totalCount;
+  if (blueRatio <= 0.25) return false;
+
+  // Check that blue spans at least 35% of cell width
+  let denseColCount = 0;
+  for (let c = 0; c < cellW; c++) {
+    // Count pixels in this column that are blue
+    let colBlue = 0;
+    for (let y = sy1; y < sy2; y++) {
+      const idx = (y * width + (sx1 + c)) * 4;
+      const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+      if (isBlueHsv(h, s, v)) colBlue++;
+    }
+    if (colBlue > cellH * 0.10) denseColCount++;
+  }
+
+  return (denseColCount / cellW) >= 0.35;
+}
+
+function buildTileMosaic(canvas, grid, tilePositions) {
+  // Build a labeled mosaic of all detected tiles
+  const cellSize = 60;
+  const labelHeight = 18;
+  const padding = 2;
+  const colsPerRow = 10;
+  const nTiles = tilePositions.length;
+  const nRows = Math.ceil(nTiles / colsPerRow);
+
+  const mosaicW = colsPerRow * (cellSize + padding) + padding;
+  const mosaicH = nRows * (cellSize + padding + labelHeight) + padding;
+
+  const mosaicCanvas = document.createElement('canvas');
+  mosaicCanvas.width = mosaicW;
+  mosaicCanvas.height = mosaicH;
+  const mctx = mosaicCanvas.getContext('2d');
+  mctx.fillStyle = '#000';
+  mctx.fillRect(0, 0, mosaicW, mosaicH);
+
+  const srcCtx = canvas.getContext('2d');
+
+  for (let idx = 0; idx < nTiles; idx++) {
+    const { row, col, x1, y1, x2, y2 } = tilePositions[idx];
+    const gridR = Math.floor(idx / colsPerRow);
+    const gridC = idx % colsPerRow;
+    const dx = gridC * (cellSize + padding) + padding;
+    const dy = gridR * (cellSize + padding + labelHeight) + padding;
+
+    // Draw the cropped tile
+    const srcW = x2 - x1, srcH = y2 - y1;
+    mctx.drawImage(canvas, x1, y1, srcW, srcH, dx, dy, cellSize, cellSize);
+
+    // Draw position label
+    const label = `${row + 1}${String.fromCharCode(65 + col)}`;
+    mctx.fillStyle = '#fff';
+    mctx.font = '12px sans-serif';
+    mctx.fillText(label, dx + 2, dy + cellSize + 14);
+  }
+
+  return mosaicCanvas;
+}
+
+async function detectRackTiles(canvas, imageData, width, height, gridBottom) {
+  // Detect rack tiles below the board
+  const cellHApprox = (gridBottom - height * 0.29) / 15;
+  const rackTop = Math.floor(gridBottom + cellHApprox * 0.5);
+  const rackBottom = Math.floor(height * 0.95);
+  if (rackBottom <= rackTop) return [];
+
+  const rackTiles = [];
+
+  // Find blue tile clusters in the rack region
+  // Scan for contiguous blue regions
+  const minTileSize = Math.floor(width / 30);
+  const maxTileSize = Math.floor(width / 6);
+
+  // Simple approach: scan columns for blue density
+  const colBlue = new Float32Array(width);
+  for (let x = 0; x < width; x++) {
+    let blueCount = 0;
+    for (let y = rackTop; y < rackBottom; y++) {
+      const idx = (y * width + x) * 4;
+      const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+      if (h >= 95 && h <= 140 && s >= 30 && v >= 50) blueCount++;
+    }
+    colBlue[x] = blueCount;
+  }
+
+  // Find runs of columns with significant blue
+  const threshold = (rackBottom - rackTop) * 0.15;
+  let inTile = false, tileStart = 0;
+  const tileRuns = [];
+  for (let x = 0; x < width; x++) {
+    if (colBlue[x] > threshold) {
+      if (!inTile) { inTile = true; tileStart = x; }
+    } else {
+      if (inTile) {
+        const w = x - tileStart;
+        if (w > minTileSize && w < maxTileSize) {
+          tileRuns.push({ x1: tileStart, x2: x });
+        }
+        inTile = false;
+      }
+    }
+  }
+  if (inTile) {
+    const w = width - tileStart;
+    if (w > minTileSize && w < maxTileSize) {
+      tileRuns.push({ x1: tileStart, x2: width });
+    }
+  }
+
+  // For each run, find vertical bounds
+  for (const run of tileRuns) {
+    let minY = rackBottom, maxY = rackTop;
+    for (let y = rackTop; y < rackBottom; y++) {
+      for (let x = run.x1; x < run.x2; x++) {
+        const idx = (y * width + x) * 4;
+        const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+        if (h >= 95 && h <= 140 && s >= 30 && v >= 50) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    const h = maxY - minY;
+    if (h > minTileSize && h < maxTileSize) {
+      rackTiles.push({ x1: run.x1, y1: minY, x2: run.x2, y2: maxY + 1 });
+    }
+  }
+
+  return rackTiles;
+}
+
+async function analyzeHybrid(imageSource) {
+  // imageSource: either { url: string } or { dataUrl: string }
+  // Returns parsed board object or null if hybrid detection fails
+
+  setStatus('Loading image for CV analysis...', 'loading');
+
+  // Step 1: Load image onto canvas
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = () => reject(new Error('Failed to load image'));
+    if (imageSource.dataUrl) img.src = imageSource.dataUrl;
+    else img.src = imageSource.url;
+  });
+
+  const cvCanvas = document.createElement('canvas');
+  cvCanvas.width = img.naturalWidth;
+  cvCanvas.height = img.naturalHeight;
+  const ctx = cvCanvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+
+  const w = cvCanvas.width, h = cvCanvas.height;
+  const idata = ctx.getImageData(0, 0, w, h);
+  const pixels = idata.data;
+
+  setStatus(`Image loaded (${w}x${h}). Detecting grid...`, 'loading');
+
+  // Step 2-3: Detect board grid
+  const grid = detectBoardGrid(pixels, w, h);
+  console.log('Grid detected:', grid);
+
+  // Step 4: Detect tiles in each cell
+  const tilePositions = [];
+  for (let row = 0; row < 15; row++) {
+    for (let col = 0; col < 15; col++) {
+      const y1 = grid.hGrid[row], y2 = grid.hGrid[row + 1];
+      const x1 = grid.vGrid[col], x2 = grid.vGrid[col + 1];
+      if (isTileCell(pixels, w, x1, y1, x2, y2)) {
+        tilePositions.push({ row, col, x1, y1, x2, y2 });
+      }
+    }
+  }
+
+  console.log(`Detected ${tilePositions.length} tiles on board`);
+
+  if (tilePositions.length === 0) {
+    console.warn('No tiles detected, falling back to full-board API');
+    return null;
+  }
+
+  setStatus(`Found ${tilePositions.length} tiles. Building mosaic...`, 'loading');
+
+  // Step 5: Build labeled tile mosaic (board tiles)
+  const mosaicCanvas = buildTileMosaic(cvCanvas, grid, tilePositions);
+
+  // Also detect rack tiles
+  const rackTileBoxes = await detectRackTiles(cvCanvas, pixels, w, h, grid.hGrid[15]);
+  let rackMosaicCanvas = null;
+  if (rackTileBoxes.length > 0) {
+    const rackPositions = rackTileBoxes.map((box, i) => ({
+      row: -1, col: i, x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2
+    }));
+
+    // Build a separate rack mosaic with "R1", "R2" labels
+    const rCellSize = 60;
+    const rPad = 2;
+    const rLabelH = 18;
+    const rW = rackPositions.length * (rCellSize + rPad) + rPad;
+    const rH = rCellSize + rLabelH + rPad * 2;
+    rackMosaicCanvas = document.createElement('canvas');
+    rackMosaicCanvas.width = rW;
+    rackMosaicCanvas.height = rH;
+    const rctx = rackMosaicCanvas.getContext('2d');
+    rctx.fillStyle = '#000';
+    rctx.fillRect(0, 0, rW, rH);
+    for (let i = 0; i < rackPositions.length; i++) {
+      const rp = rackPositions[i];
+      const dx = i * (rCellSize + rPad) + rPad;
+      rctx.drawImage(cvCanvas, rp.x1, rp.y1, rp.x2 - rp.x1, rp.y2 - rp.y1, dx, rPad, rCellSize, rCellSize);
+      rctx.fillStyle = '#fff';
+      rctx.font = '12px sans-serif';
+      rctx.fillText(`R${i + 1}`, dx + 2, rPad + rCellSize + 14);
+    }
+  }
+
+  // Step 6: Combine mosaics and send to GPT-4o for letter OCR
+  // Stitch board mosaic + rack mosaic into one image
+  let combinedCanvas = mosaicCanvas;
+  if (rackMosaicCanvas) {
+    const cW = Math.max(mosaicCanvas.width, rackMosaicCanvas.width);
+    const cH = mosaicCanvas.height + 20 + rackMosaicCanvas.height;
+    combinedCanvas = document.createElement('canvas');
+    combinedCanvas.width = cW;
+    combinedCanvas.height = cH;
+    const cctx = combinedCanvas.getContext('2d');
+    cctx.fillStyle = '#000';
+    cctx.fillRect(0, 0, cW, cH);
+    cctx.drawImage(mosaicCanvas, 0, 0);
+    // Label
+    cctx.fillStyle = '#ff0';
+    cctx.font = 'bold 14px sans-serif';
+    cctx.fillText('RACK:', 2, mosaicCanvas.height + 14);
+    cctx.drawImage(rackMosaicCanvas, 0, mosaicCanvas.height + 20);
+  }
+
+  const mosaicDataUrl = combinedCanvas.toDataURL('image/png');
+
+  // Build position list for prompt
+  const boardPosLabels = tilePositions.map(t => `${t.row + 1}${String.fromCharCode(65 + t.col)}`);
+  const rackPosLabels = rackTileBoxes.map((_, i) => `R${i + 1}`);
+  const allLabels = [...boardPosLabels, ...rackPosLabels];
+
+  setStatus(`Sending ${allLabels.length} tile mosaic to GPT-4o for letter recognition...`, 'loading');
+
+  const key = getKey();
+  if (!key) { setStatus('API key required for letter recognition.', 'error'); return null; }
+
+  const model = document.getElementById('modelSelect').value;
+
+  const letterPrompt = `This image shows ${allLabels.length} Crossplay/Scrabble tiles arranged in a grid mosaic.
+Each tile is a blue square with a white letter and a small superscript number (point value).
+Below each tile is a position label.
+
+Board tile labels use format "RowCol" (e.g. "5H" = row 5, column H).
+Rack tile labels use format "R1", "R2", etc.
+
+For each tile, read the single letter (A-Z) on it.
+If the superscript number is 0, it is a BLANK tile — use lowercase for blanks.
+
+Output ONLY a JSON object mapping each label to its letter.
+Example: {"5H": "M", "8A": "G", "R1": "W", "R2": "l"}`;
+
+  const body = {
+    model,
+    max_tokens: 2048,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: 'You read letters from individual Scrabble tile images. Output only JSON.' },
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: mosaicDataUrl } },
+          { type: 'text', text: letterPrompt }
+        ]
+      }
+    ]
+  };
+
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify(body)
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
+  }
+
+  const data = await resp.json();
+  const letterMap = JSON.parse(data.choices[0].message.content);
+  console.log('Letter map from API:', letterMap);
+
+  // Step 7: Assemble grid
+  const boardGrid = Array(15).fill(null).map(() => '.'.repeat(15).split(''));
+  let missedTiles = 0;
+
+  for (const tp of tilePositions) {
+    const label = `${tp.row + 1}${String.fromCharCode(65 + tp.col)}`;
+    const letter = letterMap[label];
+    if (letter && letter.length === 1 && /[A-Za-z]/.test(letter)) {
+      boardGrid[tp.row][tp.col] = letter;
+    } else {
+      boardGrid[tp.row][tp.col] = '?';
+      missedTiles++;
+    }
+  }
+
+  // Build rack string
+  let rack = '';
+  for (let i = 0; i < rackTileBoxes.length; i++) {
+    const label = `R${i + 1}`;
+    const letter = letterMap[label];
+    if (letter && letter.length === 1 && /[A-Za-z]/.test(letter)) {
+      rack += letter.toUpperCase();
+    } else {
+      rack += '?';
+    }
+  }
+
+  const gridStrings = boardGrid.map(row => row.join(''));
+
+  setStatus(`Hybrid parsing complete: ${tilePositions.length} tiles, ${missedTiles} unrecognized.`, 'done');
+
+  return {
+    grid: gridStrings,
+    rack: rack || '?',
+    player_score: 0,
+    opponent_score: 0,
+    player_name: 'You',
+    opponent_name: 'Opponent'
+  };
+}
+
 // ── System prompt (anti-hallucination) ────────────────────────────────────
 const SYSTEM_PROMPT = "You are a precise Scrabble board OCR system. You output exactly one JSON object. CRITICAL RULES: (1) TILES are ONLY the solid BLUE squares with white letters — ignore all premium labels (3W, 3L, 2W, 2L), the center star, and empty squares. (2) Each grid cell is exactly one character: a letter A-Z or '.'. No digits ever. (3) You MUST think step-by-step: first identify each word on the board and its exact starting position, then build the grid from those positions.";
 
@@ -207,7 +671,7 @@ Output a single JSON object:
   "grid": ["15-char string", "15-char string", ... 15 total rows]
 }`;
 
-// ── Analyze (OpenAI GPT-4o Vision) ───────────────────────────────────────
+// ── Analyze (Hybrid CV+API first, fallback to full-board vision) ─────────
 async function analyze() {
   const key = getKey();
   if (!key) { setStatus('Enter your OpenAI API key first.', 'error'); return; }
@@ -217,8 +681,81 @@ async function analyze() {
 
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
-  setStatus('Analyzing... (takes ~15-30s)', 'loading');
 
+  try {
+    // Try hybrid CV+API approach first
+    const imageSource = base64Image
+      ? { dataUrl: `data:${base64Image.media_type};base64,${base64Image.data}` }
+      : { url: imageUrl };
+
+    let parsed = null;
+    try {
+      parsed = await analyzeHybrid(imageSource);
+    } catch (e) {
+      console.warn('Hybrid parsing failed, falling back:', e.message);
+    }
+
+    if (parsed) {
+      // Hybrid succeeded — also try to extract scores via a quick API call
+      try {
+        const scoreParsed = await extractScoresOnly(imageSource);
+        if (scoreParsed) {
+          parsed.player_score = scoreParsed.player_score || 0;
+          parsed.opponent_score = scoreParsed.opponent_score || 0;
+          parsed.player_name = scoreParsed.player_name || 'You';
+          parsed.opponent_name = scoreParsed.opponent_name || 'Opponent';
+        }
+      } catch (e) {
+        console.warn('Score extraction failed:', e.message);
+      }
+      renderResult(parsed);
+      return;
+    }
+
+    // Fallback: full-board GPT-4o vision
+    setStatus('Hybrid failed — using full-board vision (less accurate)...', 'loading');
+    await analyzeFullBoard(imageUrl);
+
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function extractScoresOnly(imageSource) {
+  const key = getKey();
+  const model = document.getElementById('modelSelect').value;
+  const imageContent = imageSource.dataUrl
+    ? { type: 'image_url', image_url: { url: imageSource.dataUrl } }
+    : { type: 'image_url', image_url: { url: imageSource.url } };
+
+  const body = {
+    model, max_tokens: 256,
+    response_format: { type: 'json_object' },
+    messages: [{
+      role: 'user',
+      content: [
+        imageContent,
+        { type: 'text', text: 'Read ONLY the player names and scores from this Crossplay screenshot. Output JSON: {"player_name":"...","player_score":N,"opponent_name":"...","opponent_score":N}' }
+      ]
+    }]
+  };
+
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  return JSON.parse(data.choices[0].message.content);
+}
+
+async function analyzeFullBoard(imageUrl) {
+  setStatus('Analyzing with full-board vision... (takes ~15-30s)', 'loading');
+
+  const key = getKey();
   const imageContent = base64Image
     ? { type: 'image_url', image_url: { url: `data:${base64Image.media_type};base64,${base64Image.data}` } }
     : { type: 'image_url', image_url: { url: imageUrl } };
@@ -238,36 +775,29 @@ async function analyze() {
     ]
   };
 
-  try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${key}`
-      },
-      body: JSON.stringify(body)
-    });
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`
+    },
+    body: JSON.stringify(body)
+  });
 
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
-    }
-
-    const data = await resp.json();
-    const text = data.choices[0].message.content;
-
-    const parsed = JSON.parse(text);
-    if (parsed.grid) {
-      parsed.grid = sanitizeGrid(parsed.grid);
-    }
-    renderResult(parsed);
-    setStatus('Done. ' + (parsed.grid ? parsed.grid.filter(r => r.replace(/\./g,'').length > 0).length + ' rows with tiles.' : ''), 'done');
-
-  } catch (e) {
-    setStatus('Error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
   }
+
+  const data = await resp.json();
+  const text = data.choices[0].message.content;
+
+  const parsed = JSON.parse(text);
+  if (parsed.grid) {
+    parsed.grid = sanitizeGrid(parsed.grid);
+  }
+  renderResult(parsed);
+  setStatus('Done (fallback mode). ' + (parsed.grid ? parsed.grid.filter(r => r.replace(/\./g,'').length > 0).length + ' rows with tiles.' : ''), 'done');
 }
 
 /* ── Anthropic API (commented out — CORS blocked by org policy) ───────────

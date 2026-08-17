@@ -200,30 +200,101 @@ function isBlueHsv(h, s, v) {
 }
 
 function detectBoardGrid(imageData, width, height) {
-  // Width prior: board spans ~96% of image width, centered
-  const BOARD_WIDTH_FRAC = 0.96;
-  const cellW = width * BOARD_WIDTH_FRAC / 15;
-  const cellH = cellW; // square cells
-  const gridLeft = (width - 15 * cellW) / 2;
+  // Search band: 25%-75% of height for blue pixels
+  const searchTop = Math.floor(height * 0.25);
+  const searchBottom = Math.floor(height * 0.75);
 
-  // Search band: 30%-70% of height for blue pixels
-  const searchTop = Math.floor(height * 0.30);
-  const searchBottom = Math.floor(height * 0.70);
-
-  // Build y-profile of blue pixel density
+  // Build x-profile and y-profile of blue pixel density simultaneously
+  const xProfile = new Float32Array(width);
   const yProfile = new Float32Array(searchBottom - searchTop);
+  // Collect all blue pixel x,y for alignment scoring
+  const blueXs = [];
+
   for (let y = searchTop; y < searchBottom; y++) {
-    let blueCount = 0;
+    let rowBlue = 0;
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 4;
       const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
-      if (h >= 95 && h <= 135 && s >= 80 && v >= 80) blueCount++;
+      if (h >= 95 && h <= 135 && s >= 60 && v >= 80) {
+        rowBlue++;
+        xProfile[x]++;
+        blueXs.push(x);
+      }
     }
-    yProfile[y - searchTop] = blueCount;
+    yProfile[y - searchTop] = rowBlue;
   }
 
-  // Find first row with significant blue content (>10% of width)
-  const tileRowThresh = width * 0.10;
+  if (blueXs.length === 0) {
+    console.warn('No blue tiles found, using fallback grid');
+    return fallbackGrid(width, height);
+  }
+
+  // ── Determine board left/right from x-profile ──────────────────────
+  // Find the leftmost and rightmost x-positions with significant blue density
+  const xThresh = (searchBottom - searchTop) * 0.02; // at least 2% of search height has blue
+  let boardLeft = 0, boardRight = width - 1;
+  for (let x = 0; x < width; x++) {
+    if (xProfile[x] > xThresh) { boardLeft = x; break; }
+  }
+  for (let x = width - 1; x >= 0; x--) {
+    if (xProfile[x] > xThresh) { boardRight = x; break; }
+  }
+
+  // The blue pixels are INSIDE tiles, so boardLeft is the left edge of the
+  // leftmost tile and boardRight is the right edge of the rightmost tile.
+  // We need to expand slightly to get the full cell boundaries.
+  // Tiles are inset ~4% from cell edges, so expand by ~4% of cell width.
+  const rawBoardWidth = boardRight - boardLeft;
+  // Estimate cellW from the raw blue span — tiles span at most 15 columns
+  // but might not fill all columns. Use the full span as the board width
+  // (leftmost tile left edge to rightmost tile right edge).
+  // If the leftmost tile is in column A and rightmost in column O,
+  // the span covers ~15 cells minus small margins.
+  // Try different column spans and pick the one that best aligns blue pixels.
+
+  // Simple approach: assume blue spans from column A left edge to column O right edge
+  // (most screenshots have tiles near both edges — premium labels etc.)
+  // cellW = rawBoardWidth / 15
+  // But if only a few tiles exist, the span could be smaller than 15 columns.
+
+  // Better approach: try multiple cellW values and score alignment
+  let bestCellW = rawBoardWidth / 15;
+  let bestGridLeft = boardLeft;
+  let bestScore = Infinity;
+
+  // Try cellW values from rawBoardWidth/15 to rawBoardWidth/8
+  // (board could span 8 to 15 columns worth of tiles)
+  for (let nCols = 8; nCols <= 15; nCols++) {
+    const tryCellW = rawBoardWidth / nCols;
+    // For each nCols, try different alignments (which column is boardLeft?)
+    for (let startCol = 0; startCol <= 15 - nCols; startCol++) {
+      const tryGridLeft = boardLeft - startCol * tryCellW;
+      // Score: how well do blue pixels align to cell centers?
+      let score = 0;
+      const sampleStep = Math.max(1, Math.floor(blueXs.length / 500));
+      for (let i = 0; i < blueXs.length; i += sampleStep) {
+        const col = (blueXs[i] - tryGridLeft) / tryCellW;
+        const frac = col - Math.floor(col);
+        // Pixels should cluster in the middle of cells (0.1 to 0.9), not on edges (0, 1)
+        const edgeDist = Math.min(frac, 1 - frac);
+        if (edgeDist < 0.08) score += 1; // penalty for being on grid line
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestCellW = tryCellW;
+        bestGridLeft = tryGridLeft;
+      }
+    }
+  }
+
+  const cellW = bestCellW;
+  const cellH = cellW; // square cells
+  const gridLeft = bestGridLeft;
+
+  console.log(`Grid detection: boardLeft=${boardLeft}, boardRight=${boardRight}, rawWidth=${rawBoardWidth}, cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}`);
+
+  // ── Determine grid top from y-profile ──────────────────────────────
+  const tileRowThresh = width * 0.05;
   let firstTileY = -1;
   for (let i = 0; i < yProfile.length; i++) {
     if (yProfile[i] > tileRowThresh) {
@@ -233,24 +304,31 @@ function detectBoardGrid(imageData, width, height) {
   }
 
   if (firstTileY < 0) {
-    // Fallback: no blue pixels found
-    console.warn('No blue tiles found, using fallback grid');
     return fallbackGrid(width, height);
   }
 
-  // Snap grid top: try each possible row offset, pick closest to h*0.29
-  const gridTopMin = height * 0.15;
-  const gridTopMax = height * 0.32;
-  const expectedBoardTop = height * 0.29;
+  // Snap grid top: try each possible row offset for the topmost tile
+  const gridTopMin = height * 0.10;
+  const gridTopMax = height * 0.40;
   let bestGridTop = null;
-  let bestDist = Infinity;
+  let bestTopScore = Infinity;
 
+  // Also use blue pixel y-positions for alignment scoring
   for (let offset = 0; offset < 15; offset++) {
     const gridTop = firstTileY - offset * cellH;
     if (gridTop < gridTopMin || gridTop > gridTopMax) continue;
-    const dist = Math.abs(gridTop - expectedBoardTop);
-    if (dist < bestDist) {
-      bestDist = dist;
+    // Score: how well do blue y-pixels align to cell centers?
+    let score = 0;
+    for (let i = 0; i < yProfile.length; i += 3) {
+      if (yProfile[i] < tileRowThresh) continue;
+      const y = i + searchTop;
+      const row = (y - gridTop) / cellH;
+      const frac = row - Math.floor(row);
+      const edgeDist = Math.min(frac, 1 - frac);
+      if (edgeDist < 0.08) score += yProfile[i];
+    }
+    if (score < bestTopScore) {
+      bestTopScore = score;
       bestGridTop = gridTop;
     }
   }
@@ -533,9 +611,8 @@ async function analyzeHybrid(imageSource) {
   document.getElementById('debugSection').classList.remove('hidden');
 
   let debugLog = `Image: ${w}x${h}\n`;
-  debugLog += `Grid top: ${grid.hGrid[0]}, bottom: ${grid.hGrid[15]}\n`;
-  debugLog += `Grid left: ${grid.vGrid[0]}, right: ${grid.vGrid[15]}\n`;
-  debugLog += `Cell size: ${grid.cellW.toFixed(1)}x${grid.cellH.toFixed(1)}\n`;
+  debugLog += `Grid: top=${grid.hGrid[0]} bottom=${grid.hGrid[15]} left=${grid.vGrid[0]} right=${grid.vGrid[15]}\n`;
+  debugLog += `Cell size: ${grid.cellW.toFixed(1)}x${grid.cellH.toFixed(1)} (${(15*grid.cellW/w*100).toFixed(1)}% of width)\n`;
   debugLog += `Tiles detected: ${tilePositions.length}\n`;
   debugLog += `Positions: ${tilePositions.map(t => `${t.row+1}${String.fromCharCode(65+t.col)}`).join(', ')}\n`;
 

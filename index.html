@@ -196,7 +196,7 @@ function rgbToHsv(r, g, b) {
 }
 
 function isBlueHsv(h, s, v) {
-  return h >= 95 && h <= 135 && s >= 30 && v >= 80;
+  return h >= 95 && h <= 135 && s >= 80 && v >= 80;
 }
 
 function detectBoardGrid(imageData, width, height) {
@@ -225,7 +225,7 @@ function detectBoardGrid(imageData, width, height) {
   console.log(`Grid detection: cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, boardWidth=${(15*cellW).toFixed(0)}px (${(BOARD_WIDTH_FRAC*100).toFixed(0)}%)`);
 
   // ── Determine grid top from y-profile ──────────────────────────────
-  const tileRowThresh = width * 0.05;
+  const tileRowThresh = width * 0.10;
   let firstTileY = -1;
   for (let i = 0; i < yProfile.length; i++) {
     if (yProfile[i] > tileRowThresh) {
@@ -239,32 +239,24 @@ function detectBoardGrid(imageData, width, height) {
   }
 
   // Snap grid top: try each possible row offset for the topmost tile
+  // Anchor to expectedBoardTop (~29% of height, matching Python CV reference)
+  const expectedBoardTop = height * 0.29;
   const gridTopMin = height * 0.10;
   const gridTopMax = height * 0.40;
   let bestGridTop = null;
-  let bestTopScore = Infinity;
+  let bestDist = Infinity;
 
-  // Also use blue pixel y-positions for alignment scoring
   for (let offset = 0; offset < 15; offset++) {
     const gridTop = firstTileY - offset * cellH;
     if (gridTop < gridTopMin || gridTop > gridTopMax) continue;
-    // Score: how well do blue y-pixels align to cell centers?
-    let score = 0;
-    for (let i = 0; i < yProfile.length; i += 3) {
-      if (yProfile[i] < tileRowThresh) continue;
-      const y = i + searchTop;
-      const row = (y - gridTop) / cellH;
-      const frac = row - Math.floor(row);
-      const edgeDist = Math.min(frac, 1 - frac);
-      if (edgeDist < 0.08) score += yProfile[i];
-    }
-    if (score < bestTopScore) {
-      bestTopScore = score;
+    const dist = Math.abs(gridTop - expectedBoardTop);
+    if (dist < bestDist) {
+      bestDist = dist;
       bestGridTop = gridTop;
     }
   }
 
-  if (bestGridTop === null) bestGridTop = height * 0.20;
+  if (bestGridTop === null) bestGridTop = expectedBoardTop;
 
   // Generate grid lines
   const hGrid = [], vGrid = [];
@@ -373,10 +365,10 @@ function buildTileMosaic(canvas, grid, tilePositions) {
     const srcW = x2 - x1, srcH = y2 - y1;
     mctx.drawImage(canvas, x1, y1, srcW, srcH, dx, dy + labelHeight, cellSize, cellSize);
 
-    // Mask the superscript number (top-right ~35% x 35% of tile)
-    // This prevents GPT-4o from confusing point values with letters
+    // Mask the superscript point value (small number in top-right corner of tile)
+    // Use a small rectangle to avoid covering the main letter
     mctx.fillStyle = '#3a7abd'; // approximate Crossplay tile blue
-    mctx.fillRect(dx + cellSize * 0.55, dy + labelHeight, cellSize * 0.45, cellSize * 0.38);
+    mctx.fillRect(dx + cellSize * 0.65, dy + labelHeight, cellSize * 0.35, cellSize * 0.28);
 
     // Draw thin border around the tile
     mctx.strokeStyle = '#444';
@@ -596,9 +588,9 @@ async function analyzeHybrid(imageSource) {
       rctx.textAlign = 'left';
       // Tile below
       rctx.drawImage(cvCanvas, rp.x1, rp.y1, rp.x2 - rp.x1, rp.y2 - rp.y1, dx, rPad + rLabelH, rCellSize, rCellSize);
-      // Mask superscript
+      // Mask superscript point value (top-right corner of tile)
       rctx.fillStyle = '#3a7abd';
-      rctx.fillRect(dx + rCellSize * 0.55, rPad + rLabelH, rCellSize * 0.45, rCellSize * 0.38);
+      rctx.fillRect(dx + rCellSize * 0.65, rPad + rLabelH, rCellSize * 0.35, rCellSize * 0.28);
     }
   }
 

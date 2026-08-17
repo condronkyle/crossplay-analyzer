@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crossplay Board — Manual Input</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; padding: 20px; }
+  .container { max-width: 1400px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 20px; }
+  .subtitle a { color: #4a6fa5; text-decoration: none; }
+  .subtitle a:hover { text-decoration: underline; }
+
+  /* Input grid */
+  .grid-container { display: inline-block; margin-bottom: 20px; }
+  table.input-grid { border-collapse: collapse; font-family: 'Courier New', monospace; }
+  table.input-grid th { width: 32px; height: 24px; text-align: center; color: #888; font-size: 11px; font-weight: 400; background: #16213e; border: 1px solid #333; padding: 0; }
+  table.input-grid td { width: 32px; height: 32px; padding: 0; border: 1px solid #333; position: relative; }
+  table.input-grid td input {
+    width: 100%; height: 100%; border: none; outline: none;
+    text-align: center; font-size: 15px; font-weight: 700; font-family: 'Courier New', monospace;
+    color: #fff; background: transparent; padding: 0; caret-color: #fff;
+    text-transform: uppercase;
+  }
+  table.input-grid td input::placeholder { font-size: 8px; font-weight: 400; color: rgba(255,255,255,0.25); text-transform: none; }
+  table.input-grid td input:focus { outline: 2px solid #4a6fa5; outline-offset: -2px; z-index: 1; position: relative; }
+
+  /* Premium square colors */
+  .sq-normal { background: #1e2d4a; }
+  .sq-3w { background: #6b1a1a; }
+  .sq-2w { background: #8b3a5c; }
+  .sq-3l { background: #1a3a6b; }
+  .sq-2l { background: #1a5a6b; }
+  .sq-center { background: #2d1e4a; }
+  .sq-filled { background: #2980b9 !important; }
+
+  /* Meta inputs */
+  .meta-section { display: flex; gap: 20px; margin-bottom: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .meta-group { display: flex; flex-direction: column; gap: 4px; }
+  .meta-group label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+  .meta-group input { padding: 8px 12px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; width: 160px; }
+  .meta-group input.narrow { width: 80px; }
+  .meta-group input.rack-input { width: 120px; font-family: 'Courier New', monospace; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; }
+  .meta-group input:focus { outline: none; border-color: #4a6fa5; }
+
+  /* Layout */
+  .main-layout { display: flex; gap: 24px; flex-wrap: wrap; }
+  .left-panel { flex-shrink: 0; }
+  .right-panel { flex: 1; min-width: 300px; }
+
+  /* Stats row */
+  .stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat { background: #16213e; border: 1px solid #333; border-radius: 8px; padding: 12px 20px; min-width: 120px; text-align: center; }
+  .stat .val { font-size: 1.5rem; font-weight: 700; color: #fff; }
+  .stat .lbl { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Board visualization */
+  table.board { border-collapse: collapse; font-family: 'Courier New', monospace; font-size: 14px; }
+  table.board th, table.board td { width: 28px; height: 28px; text-align: center; border: 1px solid #333; padding: 0; }
+  table.board th { background: #16213e; color: #888; font-size: 11px; font-weight: 400; }
+  table.board td.tile { background: #2980b9; color: #fff; font-weight: 700; }
+  table.board td.empty { background: #1e2d4a; color: #555; font-size: 9px; }
+  table.board td.center { background: #2d1e4a; }
+
+  /* Words */
+  .words-wrap h3 { font-size: 1rem; margin-bottom: 8px; color: #fff; }
+  .word-list { max-height: 400px; overflow-y: auto; }
+  .word-list table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .word-list th, .word-list td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #222; }
+  .word-list th { color: #888; font-weight: 400; }
+  .word-list td { color: #e0e0e0; }
+
+  /* Buttons */
+  .btn-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  button { padding: 8px 16px; border: none; border-radius: 6px; font-size: 0.9rem; cursor: pointer; font-weight: 600; }
+  .btn-primary { background: #4a6fa5; color: #fff; }
+  .btn-primary:hover { background: #5a7fb5; }
+  .btn-danger { background: #6b1a1a; color: #e0a0a0; }
+  .btn-danger:hover { background: #8b2a2a; }
+  .btn-secondary { background: #2d4a22; color: #afd89a; }
+  .btn-secondary:hover { background: #3d5a32; }
+  .btn-neutral { background: #333; color: #ccc; }
+  .btn-neutral:hover { background: #444; }
+
+  #copyStatus { font-size: 0.85rem; color: #2ecc71; margin-left: 8px; opacity: 0; transition: opacity 0.3s; }
+  #copyStatus.show { opacity: 1; }
+
+  .output-section { margin-top: 16px; }
+  .output-section h3 { font-size: 1rem; margin-bottom: 8px; color: #fff; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Crossplay Board — Manual Input</h1>
+  <p class="subtitle">Type letters directly into the grid to build a board state. <a href="index.html">Back to Analyzer</a></p>
+
+  <!-- Meta inputs -->
+  <div class="meta-section">
+    <div class="meta-group">
+      <label>Player 1</label>
+      <input type="text" id="p1Name" value="You" placeholder="Name">
+    </div>
+    <div class="meta-group">
+      <label>P1 Score</label>
+      <input type="number" id="p1Score" class="narrow" value="0">
+    </div>
+    <div class="meta-group">
+      <label>Player 2</label>
+      <input type="text" id="p2Name" value="Opponent" placeholder="Name">
+    </div>
+    <div class="meta-group">
+      <label>P2 Score</label>
+      <input type="number" id="p2Score" class="narrow" value="0">
+    </div>
+    <div class="meta-group">
+      <label>Rack</label>
+      <input type="text" id="rackInput" class="rack-input" maxlength="7" placeholder="ABCDEFG">
+    </div>
+    <div class="meta-group">
+      <label>Tiles Left</label>
+      <input type="number" id="tilesRemaining" class="narrow" value="100">
+    </div>
+  </div>
+
+  <!-- Button row -->
+  <div class="btn-row">
+    <button class="btn-primary" onclick="copyJSON()">Copy JSON</button>
+    <button class="btn-primary" onclick="copyGCG()">Copy GCG</button>
+    <button class="btn-danger" onclick="clearBoard()">Clear Board</button>
+    <button class="btn-neutral" onclick="loadSample()">Load Sample</button>
+    <button id="kibitzBtn" style="background:#8e44ad;color:#fff;" onclick="findBestMoves()">Find Best Moves</button>
+    <span id="copyStatus"></span>
+  </div>
+
+  <div class="main-layout">
+    <!-- Left: input grid -->
+    <div class="left-panel">
+      <div class="grid-container" id="gridContainer"></div>
+    </div>
+
+    <!-- Right: output -->
+    <div class="right-panel">
+      <div class="stats" id="statsRow">
+        <div class="stat"><div class="val" id="statP1Score">0</div><div class="lbl" id="statP1Name">You</div></div>
+        <div class="stat"><div class="val" id="statP2Score">0</div><div class="lbl" id="statP2Name">Opponent</div></div>
+        <div class="stat"><div class="val" id="statRack">--</div><div class="lbl">Your Rack</div></div>
+        <div class="stat"><div class="val" id="statTileCount">0</div><div class="lbl">Tiles on Board</div></div>
+        <div class="stat"><div class="val" id="statWordCount">0</div><div class="lbl">Words Found</div></div>
+      </div>
+
+      <div class="output-section">
+        <div style="display:flex;gap:20px;flex-wrap:wrap;">
+          <div id="boardContainer"></div>
+          <div class="words-wrap" id="wordsContainer"></div>
+          <div id="movesContainer" style="min-width:300px;"></div>
+        </div>
+      </div>
+      <div id="engineStatus" style="font-size:0.8rem;color:#888;margin-top:4px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Premium square positions (Crossplay layout, 0-indexed) ──────────────
+const PREMIUM = {};
+
+// Triple Letter
+[[0,0],[0,14],[14,0],[14,14],[1,6],[1,8],[13,6],[13,8],[6,1],[6,13],[8,1],[8,13],[4,5],[4,9],[10,5],[10,9],[5,4],[5,10],[9,4],[9,10]].forEach(([r,c]) => PREMIUM[`${r},${c}`] = '3L');
+
+// Double Letter
+[[2,4],[2,10],[12,4],[12,10],[3,3],[3,11],[11,3],[11,11],[0,7],[14,7],[7,0],[7,14],[7,5],[7,9],[5,7],[9,7],[4,2],[4,12],[10,2],[10,12]].forEach(([r,c]) => PREMIUM[`${r},${c}`] = '2L');
+
+// Double Word
+[[1,1],[1,13],[13,1],[13,13],[3,7],[7,3],[7,11],[11,7]].forEach(([r,c]) => PREMIUM[`${r},${c}`] = '2W');
+
+// Triple Word
+[[0,3],[0,11],[14,3],[14,11],[3,0],[3,14],[11,0],[11,14]].forEach(([r,c]) => PREMIUM[`${r},${c}`] = '3W');
+
+const COLS = 'ABCDEFGHIJKLMNO';
+
+function getPremium(r, c) {
+  if (r === 7 && c === 7) return 'center';
+  return PREMIUM[`${r},${c}`] || null;
+}
+
+function getSqClass(r, c) {
+  const p = getPremium(r, c);
+  if (p === 'center') return 'sq-center';
+  if (p === '3W') return 'sq-3w';
+  if (p === '2W') return 'sq-2w';
+  if (p === '3L') return 'sq-3l';
+  if (p === '2L') return 'sq-2l';
+  return 'sq-normal';
+}
+
+function getPlaceholder(r, c) {
+  if (r === 7 && c === 7) return '\u2605';
+  const p = PREMIUM[`${r},${c}`];
+  return p || '';
+}
+
+// ── Build input grid ────────────────────────────────────────────────────
+function buildGrid() {
+  const container = document.getElementById('gridContainer');
+  let html = '<table class="input-grid"><tr><th></th>';
+  for (let c = 0; c < 15; c++) html += `<th>${COLS[c]}</th>`;
+  html += '</tr>';
+
+  for (let r = 0; r < 15; r++) {
+    html += `<tr><th>${r + 1}</th>`;
+    for (let c = 0; c < 15; c++) {
+      const cls = getSqClass(r, c);
+      const ph = getPlaceholder(r, c);
+      html += `<td class="${cls}" id="cell-${r}-${c}"><input type="text" maxlength="1" data-row="${r}" data-col="${c}" placeholder="${ph}" autocomplete="off" spellcheck="false"></td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</table>';
+  container.innerHTML = html;
+
+  // Attach event listeners
+  const inputs = container.querySelectorAll('input');
+  inputs.forEach(inp => {
+    inp.addEventListener('input', handleInput);
+    inp.addEventListener('keydown', handleKeydown);
+    inp.addEventListener('focus', handleFocus);
+    inp.addEventListener('click', handleClick);
+  });
+}
+
+function getInput(r, c) {
+  if (r < 0 || r > 14 || c < 0 || c > 14) return null;
+  return document.querySelector(`input[data-row="${r}"][data-col="${c}"]`);
+}
+
+function updateCellStyle(inp) {
+  const td = inp.parentElement;
+  const r = parseInt(inp.dataset.row);
+  const c = parseInt(inp.dataset.col);
+  if (inp.value.trim()) {
+    td.className = 'sq-filled';
+  } else {
+    td.className = getSqClass(r, c);
+  }
+}
+
+// ── Input handling (crossword-style) ────────────────────────────────────
+let direction = 'across'; // 'across' or 'down'
+
+function handleInput(e) {
+  const inp = e.target;
+  // Force uppercase, allow only A-Z
+  let val = inp.value.replace(/[^a-zA-Z]/g, '');
+  if (val.length > 1) val = val[val.length - 1];
+  inp.value = val.toUpperCase();
+
+  updateCellStyle(inp);
+
+  // Move to next cell if a letter was typed
+  if (val) {
+    const r = parseInt(inp.dataset.row);
+    const c = parseInt(inp.dataset.col);
+    let next;
+    if (direction === 'across') {
+      next = getInput(r, c + 1);
+    } else {
+      next = getInput(r + 1, c);
+    }
+    if (next) next.focus();
+  }
+
+  updateOutput();
+}
+
+function handleKeydown(e) {
+  const inp = e.target;
+  const r = parseInt(inp.dataset.row);
+  const c = parseInt(inp.dataset.col);
+
+  if (e.key === 'ArrowRight') { e.preventDefault(); const n = getInput(r, c + 1); if (n) n.focus(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); const n = getInput(r, c - 1); if (n) n.focus(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); const n = getInput(r + 1, c); if (n) n.focus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); const n = getInput(r - 1, c); if (n) n.focus(); }
+  else if (e.key === 'Tab') {
+    // Tab moves to next cell in current direction
+    e.preventDefault();
+    let next;
+    if (e.shiftKey) {
+      next = direction === 'across' ? getInput(r, c - 1) : getInput(r - 1, c);
+    } else {
+      next = direction === 'across' ? getInput(r, c + 1) : getInput(r + 1, c);
+    }
+    if (next) next.focus();
+  }
+  else if (e.key === 'Backspace' && !inp.value) {
+    // Move back if cell is empty
+    e.preventDefault();
+    let prev;
+    if (direction === 'across') {
+      prev = getInput(r, c - 1);
+    } else {
+      prev = getInput(r - 1, c);
+    }
+    if (prev) {
+      prev.focus();
+      prev.value = '';
+      updateCellStyle(prev);
+      updateOutput();
+    }
+  }
+  else if (e.key === 'Delete') {
+    inp.value = '';
+    updateCellStyle(inp);
+    updateOutput();
+  }
+  // Space toggles direction
+  else if (e.key === ' ') {
+    e.preventDefault();
+    direction = direction === 'across' ? 'down' : 'across';
+    showDirectionIndicator();
+  }
+}
+
+function handleFocus(e) {
+  e.target.select();
+}
+
+function handleClick(e) {
+  const inp = e.target;
+  // If clicking the already focused cell, toggle direction
+  if (document.activeElement === inp && inp.value === '') {
+    direction = direction === 'across' ? 'down' : 'across';
+    showDirectionIndicator();
+  }
+  inp.select();
+}
+
+let dirTimeout;
+function showDirectionIndicator() {
+  const status = document.getElementById('copyStatus');
+  status.textContent = 'Direction: ' + (direction === 'across' ? '\u2192 Across' : '\u2193 Down') + ' (Space to toggle)';
+  status.classList.add('show');
+  status.style.color = '#4a6fa5';
+  clearTimeout(dirTimeout);
+  dirTimeout = setTimeout(() => { status.classList.remove('show'); }, 1500);
+}
+
+// ── Read grid state ─────────────────────────────────────────────────────
+function readGrid() {
+  const grid = [];
+  for (let r = 0; r < 15; r++) {
+    let row = '';
+    for (let c = 0; c < 15; c++) {
+      const inp = getInput(r, c);
+      const v = inp.value.trim().toUpperCase();
+      row += v || '.';
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function countTiles(grid) {
+  let n = 0;
+  for (const row of grid) for (const ch of row) if (ch !== '.') n++;
+  return n;
+}
+
+// ── Word finder (same algorithm as main app) ────────────────────────────
+function findWords(grid) {
+  const words = [];
+  // Across
+  for (let r = 0; r < 15; r++) {
+    let c = 0;
+    while (c < 15) {
+      if (grid[r][c] !== '.') {
+        const s = c; let w = '';
+        while (c < 15 && grid[r][c] !== '.') { w += grid[r][c]; c++; }
+        if (w.length >= 2) words.push({ pos: `${r+1}${COLS[s]}`, word: w, dir: 'across' });
+      } else c++;
+    }
+  }
+  // Down
+  for (let c = 0; c < 15; c++) {
+    let r = 0;
+    while (r < 15) {
+      if (grid[r][c] !== '.') {
+        const s = r; let w = '';
+        while (r < 15 && grid[r][c] !== '.') { w += grid[r][c]; r++; }
+        if (w.length >= 2) words.push({ pos: `${COLS[c]}${s+1}`, word: w, dir: 'down' });
+      } else r++;
+    }
+  }
+  return words;
+}
+
+// ── Update output panel ─────────────────────────────────────────────────
+function updateOutput() {
+  const grid = readGrid();
+  const tileCount = countTiles(grid);
+  const words = findWords(grid);
+  const rack = document.getElementById('rackInput').value.toUpperCase();
+
+  // Stats
+  document.getElementById('statP1Score').textContent = document.getElementById('p1Score').value || '0';
+  document.getElementById('statP1Name').textContent = document.getElementById('p1Name').value || 'Player 1';
+  document.getElementById('statP2Score').textContent = document.getElementById('p2Score').value || '0';
+  document.getElementById('statP2Name').textContent = document.getElementById('p2Name').value || 'Player 2';
+  document.getElementById('statRack').textContent = rack || '--';
+  document.getElementById('statTileCount').textContent = tileCount;
+  document.getElementById('statWordCount').textContent = words.length;
+
+  // Board visualization
+  let html = '<table class="board"><tr><th></th>';
+  for (const ch of COLS) html += `<th>${ch}</th>`;
+  html += '</tr>';
+  for (let r = 0; r < 15; r++) {
+    html += `<tr><th>${r + 1}</th>`;
+    for (let c = 0; c < 15; c++) {
+      const ch = grid[r][c];
+      if (ch !== '.') {
+        html += `<td class="tile">${ch}</td>`;
+      } else {
+        const isCenter = r === 7 && c === 7;
+        html += `<td class="empty${isCenter ? ' center' : ''}">${isCenter ? '\u2605' : ''}</td>`;
+      }
+    }
+    html += '</tr>';
+  }
+  html += '</table>';
+  document.getElementById('boardContainer').innerHTML = html;
+
+  // Words
+  let whtml = `<h3>Words Found (${words.length})</h3><div class="word-list"><table><tr><th>Pos</th><th>Word</th><th>Dir</th></tr>`;
+  for (const w of words) whtml += `<tr><td>${w.pos}</td><td><b>${w.word}</b></td><td>${w.dir}</td></tr>`;
+  whtml += '</table></div>';
+  document.getElementById('wordsContainer').innerHTML = whtml;
+}
+
+// ── Export: JSON ────────────────────────────────────────────────────────
+function buildJSON() {
+  const grid = readGrid();
+  return {
+    player_score: parseInt(document.getElementById('p1Score').value) || 0,
+    opponent_score: parseInt(document.getElementById('p2Score').value) || 0,
+    player_name: document.getElementById('p1Name').value || 'You',
+    opponent_name: document.getElementById('p2Name').value || 'Opponent',
+    rack: document.getElementById('rackInput').value.toUpperCase(),
+    grid: grid
+  };
+}
+
+function copyJSON() {
+  const json = JSON.stringify(buildJSON(), null, 2);
+  navigator.clipboard.writeText(json).then(() => flashStatus('JSON copied'));
+}
+
+// ── Export: GCG ─────────────────────────────────────────────────────────
+function copyGCG() {
+  const data = buildJSON();
+  const grid = data.grid;
+  const words = findWords(grid);
+
+  let gcg = '#player1 ' + data.player_name + ' ' + data.player_name + '\n';
+  gcg += '#player2 ' + data.opponent_name + ' ' + data.opponent_name + '\n';
+  gcg += '#title Manual Board Input\n';
+  gcg += '#description Exported from Crossplay Board Manual Input\n';
+
+  // We cannot reconstruct individual moves from a final board state,
+  // so output the board as a series of "first player" moves.
+  // GCG format: >nickname: RACK pos PLAY +score total
+  // For manual export, list each word found as a reference.
+  gcg += '#note Board state exported as word list (not a move history)\n';
+
+  for (const w of words) {
+    // pos format: row+col for across (e.g. 8A), col+row for down (e.g. A8)
+    gcg += `#note ${w.pos} ${w.dir} ${w.word}\n`;
+  }
+
+  // Also include the raw board
+  gcg += '#note --- Raw Grid ---\n';
+  for (let r = 0; r < 15; r++) {
+    gcg += '#note ' + (r + 1).toString().padStart(2) + ' ' + grid[r] + '\n';
+  }
+
+  gcg += `#note Scores: ${data.player_name}=${data.player_score} ${data.opponent_name}=${data.opponent_score}\n`;
+  gcg += `#note Rack: ${data.rack}\n`;
+  gcg += `#rack1 ${data.rack}\n`;
+
+  navigator.clipboard.writeText(gcg).then(() => flashStatus('GCG copied'));
+}
+
+function flashStatus(msg) {
+  const el = document.getElementById('copyStatus');
+  el.textContent = msg;
+  el.style.color = '#2ecc71';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ── Clear board ─────────────────────────────────────────────────────────
+function clearBoard() {
+  const inputs = document.querySelectorAll('table.input-grid input');
+  inputs.forEach(inp => {
+    inp.value = '';
+    updateCellStyle(inp);
+  });
+  updateOutput();
+}
+
+// ── Load sample board ───────────────────────────────────────────────────
+function loadSample() {
+  const sample = [
+    '...............',
+    '...............',
+    '...............',
+    '...............',
+    '...............',
+    '...............',
+    '......QUACKLE..',
+    '.......R.......',
+    '.......O.......',
+    '.......S.......',
+    '.......S.......',
+    '...............',
+    '...............',
+    '...............',
+    '...............'
+  ];
+  document.getElementById('p1Name').value = 'You';
+  document.getElementById('p2Name').value = 'Bot';
+  document.getElementById('p1Score').value = '22';
+  document.getElementById('p2Score').value = '10';
+  document.getElementById('rackInput').value = 'AEINRST';
+  document.getElementById('tilesRemaining').value = '86';
+
+  for (let r = 0; r < 15; r++) {
+    for (let c = 0; c < 15; c++) {
+      const inp = getInput(r, c);
+      const ch = sample[r][c];
+      inp.value = ch === '.' ? '' : ch;
+      updateCellStyle(inp);
+    }
+  }
+  updateOutput();
+}
+
+// ── Listen for meta input changes ───────────────────────────────────────
+document.querySelectorAll('.meta-section input').forEach(inp => {
+  inp.addEventListener('input', updateOutput);
+});
+
+// ── Quackle WASM Engine ─────────────────────────────────────────────────
+let quackleModule = null;
+let quackleReady = false;
+
+async function loadQuackleEngine() {
+  if (quackleReady) return true;
+  const statusEl = document.getElementById('engineStatus');
+  statusEl.textContent = 'Loading Quackle engine (~27MB dictionary download)...';
+  try {
+    const script = document.createElement('script');
+    script.src = 'quackle.js';
+    await new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Failed to load quackle.js'));
+      document.head.appendChild(script);
+    });
+    quackleModule = await QuackleModule();
+    statusEl.textContent = 'Initializing engine...';
+    const ok = quackleModule.initEngine('/data');
+    if (!ok) { statusEl.textContent = 'Engine initialization failed'; return false; }
+    statusEl.textContent = 'Engine ready.';
+    quackleReady = true;
+    return true;
+  } catch (e) {
+    statusEl.textContent = 'Engine load failed: ' + e.message;
+    return false;
+  }
+}
+
+function getGridFromInputs() {
+  const rows = [];
+  for (let r = 0; r < 15; r++) {
+    let row = '';
+    for (let c = 0; c < 15; c++) {
+      const inp = document.getElementById(`cell-${r}-${c}`);
+      const v = inp ? inp.value.trim() : '';
+      row += v.length === 1 ? v.toUpperCase() : '.';
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function findBestMoves() {
+  const btn = document.getElementById('kibitzBtn');
+  btn.disabled = true;
+  btn.textContent = 'Loading engine...';
+  const ready = await loadQuackleEngine();
+  if (!ready) { btn.disabled = false; btn.textContent = 'Find Best Moves'; return; }
+
+  btn.textContent = 'Generating moves...';
+  await new Promise(r => setTimeout(r, 50));
+
+  const grid = getGridFromInputs();
+  const rack = document.getElementById('rackInput').value.trim().toUpperCase();
+  const pScore = parseInt(document.getElementById('p1Score').value) || 0;
+  const oScore = parseInt(document.getElementById('p2Score').value) || 0;
+
+  const result = quackleModule.kibitz(JSON.stringify(grid), rack, pScore, oScore, 15);
+
+  const container = document.getElementById('movesContainer');
+  if (result.error) {
+    container.innerHTML = '<h3 style="color:#e74c3c;">Error: ' + result.error + '</h3>';
+    document.getElementById('engineStatus').textContent = 'Error: ' + result.error;
+  } else {
+    let html = `<h3>Best Moves (${result.moves.length})</h3><table style="width:100%;border-collapse:collapse;font-size:0.85rem;">`;
+    html += '<tr><th style="padding:4px 8px;text-align:left;color:#888;">#</th><th style="padding:4px 8px;text-align:left;color:#888;">Pos</th><th style="padding:4px 8px;text-align:left;color:#888;">Word</th><th style="padding:4px 8px;text-align:left;color:#888;">Score</th><th style="padding:4px 8px;text-align:left;color:#888;">Equity</th></tr>';
+    for (let i = 0; i < result.moves.length; i++) {
+      const m = result.moves[i];
+      const style = i === 0 ? 'color:#2ecc71;font-weight:700;' : 'color:#e0e0e0;';
+      html += `<tr><td style="padding:4px 8px;${style}">${i+1}</td><td style="padding:4px 8px;${style}">${m.position}</td><td style="padding:4px 8px;${style}"><b>${m.tiles.replace(/\./g,'')}</b></td><td style="padding:4px 8px;${style}">${m.score}</td><td style="padding:4px 8px;${style}">${m.equity.toFixed(1)}</td></tr>`;
+    }
+    html += '</table>';
+    container.innerHTML = html;
+    document.getElementById('engineStatus').textContent = `Found ${result.moves.length} moves.`;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Find Best Moves';
+}
+
+// ── Init ────────────────────────────────────────────────────────────────
+buildGrid();
+updateOutput();
+</script>
+</body>
+</html>

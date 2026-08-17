@@ -50,6 +50,18 @@
   .hidden { display: none; }
   .model-select { display: flex; align-items: center; gap: 8px; }
   .model-select select { padding: 10px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; }
+  #kibitzBtn { background: #8e44ad; color: #fff; margin-top: 12px; }
+  #kibitzBtn:hover { background: #9b59b6; }
+  #kibitzBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .moves-wrap { width: 340px; flex-shrink: 0; }
+  .moves-wrap h3 { font-size: 1rem; margin-bottom: 8px; color: #fff; }
+  .moves-list { max-height: 500px; overflow-y: auto; }
+  .moves-list table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .moves-list th, .moves-list td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #222; }
+  .moves-list th { color: #888; font-weight: 400; }
+  .moves-list td { color: #e0e0e0; }
+  .moves-list tr:first-child td { color: #2ecc71; font-weight: 700; }
+  #engineStatus { font-size: 0.8rem; color: #888; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -58,8 +70,8 @@
   <p class="subtitle">Paste a screenshot URL or drop an image to parse the board and find all words.</p>
 
   <div class="key-row">
-    <label>Anthropic API Key:</label>
-    <input type="password" id="apiKeyInput" placeholder="sk-ant-..." />
+    <label>OpenAI API Key:</label>
+    <input type="password" id="apiKeyInput" placeholder="sk-..." />
     <button class="save-btn" onclick="saveKey()">Save</button>
     <label style="font-size:0.75rem;color:#555;">Stored in your browser only.</label>
   </div>
@@ -68,8 +80,8 @@
     <input type="text" id="imageUrlInput" placeholder="Paste image URL (imgur, etc.)" />
     <div class="model-select">
       <select id="modelSelect">
-        <option value="claude-sonnet-4-6">Sonnet 4.6 (fast, cheap)</option>
-        <option value="claude-opus-4-6">Opus 4.6 (accurate)</option>
+        <option value="gpt-4o">GPT-4o (recommended)</option>
+        <option value="gpt-4o-mini">GPT-4o Mini (fast, cheap)</option>
       </select>
     </div>
     <button id="analyzeBtn" onclick="analyze()">Analyze Board</button>
@@ -91,23 +103,27 @@
   <div class="content hidden" id="contentRow">
     <div class="board-wrap" id="boardContainer"></div>
     <div class="words-wrap" id="wordsContainer"></div>
+    <div class="moves-wrap hidden" id="movesContainer"></div>
   </div>
+
+  <button id="kibitzBtn" class="hidden" onclick="findBestMoves()">Find Best Moves (Quackle Engine)</button>
+  <div id="engineStatus"></div>
 </div>
 
 <script>
 // ── API Key persistence ───────────────────────────────────────────────────
 const apiKeyInput = document.getElementById('apiKeyInput');
-const saved = localStorage.getItem('anthropic_api_key');
+const saved = localStorage.getItem('openai_api_key');
 if (saved) apiKeyInput.value = saved;
 
 function saveKey() {
-  localStorage.setItem('anthropic_api_key', apiKeyInput.value.trim());
+  localStorage.setItem('openai_api_key', apiKeyInput.value.trim());
   setStatus('Key saved.', 'done');
 }
 
 function getKey() {
   const k = apiKeyInput.value.trim();
-  if (k) localStorage.setItem('anthropic_api_key', k);
+  if (k) localStorage.setItem('openai_api_key', k);
   return k;
 }
 
@@ -152,40 +168,49 @@ function loadFile(file) {
   reader.readAsDataURL(file);
 }
 
-// ── Vision prompt (same as the DD app) ────────────────────────────────────
-const VISION_PROMPT = `Analyze this NYT Crossplay board screenshot.
+// ── System prompt (anti-hallucination) ────────────────────────────────────
+const SYSTEM_PROMPT = "You are a precise Scrabble board OCR system. You output exactly one JSON object. CRITICAL RULES: (1) TILES are ONLY the solid BLUE squares with white letters — ignore all premium labels (3W, 3L, 2W, 2L), the center star, and empty squares. (2) Each grid cell is exactly one character: a letter A-Z or '.'. No digits ever. (3) You MUST think step-by-step: first identify each word on the board and its exact starting position, then build the grid from those positions.";
 
-The board is 15x15. TILES are BLUE squares with WHITE letters. EMPTY squares show colored premium labels (2L, 3L, 2W, 3W) or are plain.
-Blank tiles (superscript 0) should be lowercase in the grid.
+// ── Vision prompt ─────────────────────────────────────────────────────────
+const VISION_PROMPT = `Read this Crossplay/Scrabble board screenshot.
 
-Output the board as a 15x15 text grid. Use '.' for empty squares and the letter for tiles. Each row is exactly 15 characters. Blank tiles use lowercase.
+STEP 1 — IDENTIFY TILES:
+The board is 15x15. Columns A-O (left to right), Rows 1-15 (top to bottom).
+TILES = solid BLUE squares with a WHITE letter and small superscript number.
+IGNORE everything else: premium labels (3W, 3L, 2W, 2L), empty squares, center star.
+A tile with a GOLD/YELLOW border is the most recently played tile — it IS a tile.
 
-ANCHORS to verify your grid alignment:
-- The center square (row 8, col H) has the NYT logo or a star
-- Row 1 corners and Row 15 corners have 3L premium squares
-- Row 4 and Row 12 corners have 3W premium squares
+STEP 2 — LOCATE EACH WORD:
+Find every word on the board. For each word, determine:
+- The word itself (sequence of letters)
+- Direction: across (left-to-right) or down (top-to-bottom)
+- Starting position: row number (1-15) and column letter (A-O)
 
-Output as JSON:
+Use these landmarks to count positions:
+- Column A = leftmost, Column O = rightmost (15 columns total)
+- Row 1 = top, Row 15 = bottom
+- Center = Row 8, Column H
+
+STEP 3 — BUILD THE GRID:
+Place each word's letters into a 15x15 grid. Fill all other positions with '.'.
+Verify: each row is exactly 15 characters, only [A-Za-z.], no digits.
+
+Also read the rack (large tiles at bottom), both player names and scores.
+
+Output a single JSON object:
 {
-  "player_score": <int>,
-  "opponent_score": <int>,
-  "player_name": "<string>",
-  "opponent_name": "<string>",
-  "rack": "<letters>",
-  "grid": [
-    "...............",
-    "...............",
-    "... (15 rows of 15 chars each) ..."
-  ]
-}
+  "player_score": int,
+  "opponent_score": int,
+  "player_name": "string",
+  "opponent_name": "string",
+  "rack": "LETTERS",
+  "grid": ["15-char string", "15-char string", ... 15 total rows]
+}`;
 
-IMPORTANT: Each grid row must be EXACTLY 15 characters. Check all 4 edges of the board. Do not miss tiles on the right edge (column O).
-Output ONLY the JSON, no other text.`;
-
-// ── Analyze ───────────────────────────────────────────────────────────────
+// ── Analyze (OpenAI GPT-4o Vision) ───────────────────────────────────────
 async function analyze() {
   const key = getKey();
-  if (!key) { setStatus('Enter your Anthropic API key first.', 'error'); return; }
+  if (!key) { setStatus('Enter your OpenAI API key first.', 'error'); return; }
 
   const imageUrl = document.getElementById('imageUrlInput').value.trim();
   if (!imageUrl && !base64Image) { setStatus('Provide an image URL or drop an image.', 'error'); return; }
@@ -195,28 +220,30 @@ async function analyze() {
   setStatus('Analyzing... (takes ~15-30s)', 'loading');
 
   const imageContent = base64Image
-    ? { type: 'image', source: { type: 'base64', media_type: base64Image.media_type, data: base64Image.data } }
-    : { type: 'image', source: { type: 'url', url: imageUrl } };
+    ? { type: 'image_url', image_url: { url: `data:${base64Image.media_type};base64,${base64Image.data}` } }
+    : { type: 'image_url', image_url: { url: imageUrl } };
 
   const model = document.getElementById('modelSelect').value;
 
   const body = {
     model: model,
     max_tokens: 4096,
-    messages: [{
-      role: 'user',
-      content: [ imageContent, { type: 'text', text: VISION_PROMPT } ]
-    }]
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [ imageContent, { type: 'text', text: VISION_PROMPT } ]
+      }
+    ]
   };
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
+        'Authorization': `Bearer ${key}`
       },
       body: JSON.stringify(body)
     });
@@ -227,19 +254,12 @@ async function analyze() {
     }
 
     const data = await resp.json();
-    const text = data.content[0].text;
+    const text = data.choices[0].message.content;
 
-    // Extract last JSON object (model sometimes outputs multiple)
-    const lastBrace = text.lastIndexOf('}');
-    let depth = 0, start = -1;
-    for (let i = lastBrace; i >= 0; i--) {
-      if (text[i] === '}') depth++;
-      if (text[i] === '{') depth--;
-      if (depth === 0) { start = i; break; }
+    const parsed = JSON.parse(text);
+    if (parsed.grid) {
+      parsed.grid = sanitizeGrid(parsed.grid);
     }
-
-    if (start < 0) throw new Error('No JSON found in response');
-    const parsed = JSON.parse(text.substring(start, lastBrace + 1));
     renderResult(parsed);
     setStatus('Done. ' + (parsed.grid ? parsed.grid.filter(r => r.replace(/\./g,'').length > 0).length + ' rows with tiles.' : ''), 'done');
 
@@ -248,6 +268,82 @@ async function analyze() {
   } finally {
     btn.disabled = false;
   }
+}
+
+/* ── Anthropic API (commented out — CORS blocked by org policy) ───────────
+async function analyze_anthropic() {
+  const key = getKey();
+  const imageContent = base64Image
+    ? { type: 'image', source: { type: 'base64', media_type: base64Image.media_type, data: base64Image.data } }
+    : { type: 'image', source: { type: 'url', url: imageUrl } };
+  const body = {
+    model: 'claude-sonnet-4-6', max_tokens: 4096, system: SYSTEM_PROMPT,
+    messages: [
+      { role: 'user', content: [ imageContent, { type: 'text', text: VISION_PROMPT } ] },
+      { role: 'assistant', content: [{ type: 'text', text: '{"' }] }
+    ]
+  };
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+    body: JSON.stringify(body)
+  });
+  const data = await resp.json();
+  const text = '{"' + data.content[0].text;
+  // ... parse and render
+}
+*/
+
+// ── Grid sanitization (strip premium square garbage) ─────────────────────
+function sanitizeGrid(grid) {
+  if (!Array.isArray(grid)) {
+    console.warn('[sanitizeGrid] grid is not an array, returning empty 15x15');
+    return Array(15).fill('...............');
+  }
+
+  let totalFixed = 0;
+  const cleaned = [];
+
+  for (let r = 0; r < 15; r++) {
+    let row = (grid[r] || '').replace(/\s/g, '');
+
+    // Strip multi-char premium labels that GPT may have inserted as cell values.
+    // E.g. "3W" "2L" "3L" "2W" appearing in the row text — replace with "."
+    row = row.replace(/[23][WwLl]/g, '.');
+
+    // Now enforce: each character must be [A-Za-z.], replace anything else with "."
+    let sanitized = '';
+    for (let i = 0; i < row.length; i++) {
+      const ch = row[i];
+      if (/^[A-Za-z.]$/.test(ch)) {
+        sanitized += ch;
+      } else {
+        sanitized += '.';
+        totalFixed++;
+      }
+    }
+
+    // Pad or truncate to exactly 15 characters
+    if (sanitized.length < 15) {
+      const padCount = 15 - sanitized.length;
+      if (padCount > 0) {
+        console.warn(`[sanitizeGrid] Row ${r + 1} too short (${sanitized.length} chars), padding with '.'`);
+        totalFixed += padCount;
+      }
+      sanitized = sanitized.padEnd(15, '.');
+    } else if (sanitized.length > 15) {
+      console.warn(`[sanitizeGrid] Row ${r + 1} too long (${sanitized.length} chars), truncating`);
+      sanitized = sanitized.substring(0, 15);
+    }
+
+    cleaned.push(sanitized);
+  }
+
+  if (totalFixed > 0) {
+    console.warn(`[sanitizeGrid] Fixed ${totalFixed} invalid character(s) in grid. Premium square labels or digits were stripped.`);
+  }
+
+  return cleaned;
 }
 
 // ── Parse & render ────────────────────────────────────────────────────────
@@ -336,6 +432,116 @@ function renderResult(parsed) {
   whtml += '</table></div>';
   document.getElementById('wordsContainer').innerHTML = whtml;
   document.getElementById('contentRow').classList.remove('hidden');
+
+  // Show kibitz button if we have a rack
+  if (parsed.rack && parsed.rack.length > 0) {
+    document.getElementById('kibitzBtn').classList.remove('hidden');
+    lastParsed = parsed;
+  }
+}
+
+// ── Quackle WASM Engine ─────────────────────────────────────────────────
+let quackleModule = null;
+let quackleReady = false;
+let lastParsed = null;
+
+async function loadQuackleEngine() {
+  if (quackleReady) return true;
+
+  const statusEl = document.getElementById('engineStatus');
+  statusEl.textContent = 'Loading Quackle engine (~27MB dictionary download)...';
+
+  try {
+    // Load the WASM module
+    const script = document.createElement('script');
+    script.src = 'quackle.js';
+    await new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Failed to load quackle.js'));
+      document.head.appendChild(script);
+    });
+
+    // Initialize the module
+    quackleModule = await QuackleModule();
+    statusEl.textContent = 'Initializing engine...';
+
+    // Initialize with the virtual filesystem data directory
+    const ok = quackleModule.initEngine('/data');
+    if (!ok) {
+      statusEl.textContent = 'Engine initialization failed (check console)';
+      return false;
+    }
+
+    const info = quackleModule.getEngineInfo();
+    statusEl.textContent = 'Engine ready. ' + info.replace(/\n/g, ' | ');
+    quackleReady = true;
+    return true;
+  } catch (e) {
+    statusEl.textContent = 'Engine load failed: ' + e.message;
+    console.error('Quackle WASM error:', e);
+    return false;
+  }
+}
+
+async function findBestMoves() {
+  const btn = document.getElementById('kibitzBtn');
+  btn.disabled = true;
+  btn.textContent = 'Loading engine...';
+
+  const ready = await loadQuackleEngine();
+  if (!ready) {
+    btn.disabled = false;
+    btn.textContent = 'Find Best Moves (Quackle Engine)';
+    return;
+  }
+
+  if (!lastParsed || !lastParsed.grid) {
+    document.getElementById('engineStatus').textContent = 'No board data. Analyze a board first.';
+    btn.disabled = false;
+    btn.textContent = 'Find Best Moves (Quackle Engine)';
+    return;
+  }
+
+  btn.textContent = 'Generating moves...';
+  document.getElementById('engineStatus').textContent = 'Running kibitz (move generation)...';
+
+  // Small delay to let UI update
+  await new Promise(r => setTimeout(r, 50));
+
+  const gridJson = JSON.stringify(lastParsed.grid);
+  const rack = lastParsed.rack || '';
+  const pScore = lastParsed.player_score || 0;
+  const oScore = lastParsed.opponent_score || 0;
+
+  const result = quackleModule.kibitz(gridJson, rack, pScore, oScore, 15);
+
+  if (result.error) {
+    document.getElementById('engineStatus').textContent = 'Error: ' + result.error;
+  } else {
+    renderMoves(result.moves);
+    document.getElementById('engineStatus').textContent = `Found ${result.moves.length} moves.`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Find Best Moves (Quackle Engine)';
+}
+
+function renderMoves(moves) {
+  const container = document.getElementById('movesContainer');
+  container.classList.remove('hidden');
+
+  let html = `<h3>Best Moves (${moves.length})</h3><div class="moves-list"><table>`;
+  html += '<tr><th>#</th><th>Position</th><th>Word</th><th>Score</th><th>Equity</th></tr>';
+
+  for (let i = 0; i < moves.length; i++) {
+    const m = moves[i];
+    const tiles = m.tiles.replace(/\./g, '');
+    const equity = m.equity.toFixed(1);
+    html += `<tr><td>${i + 1}</td><td>${m.position}</td><td><b>${tiles}</b></td><td>${m.score}</td><td>${equity}</td></tr>`;
+  }
+
+  html += '</table></div>';
+  container.innerHTML = html;
 }
 </script>
 </body>

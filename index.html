@@ -108,6 +108,17 @@
 
   <button id="kibitzBtn" class="hidden" onclick="findBestMoves()">Find Best Moves (Quackle Engine)</button>
   <div id="engineStatus"></div>
+
+  <div id="debugSection" class="hidden" style="margin-top:20px;">
+    <h3 style="color:#888;cursor:pointer;" onclick="document.getElementById('debugContent').classList.toggle('hidden')">Debug: CV Detection (click to toggle)</h3>
+    <div id="debugContent">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;">
+        <div><p style="color:#888;font-size:0.8rem;">Grid Overlay</p><canvas id="debugGridCanvas" style="max-width:400px;width:100%;border:1px solid #333;"></canvas></div>
+        <div><p style="color:#888;font-size:0.8rem;">Tile Mosaic (sent to API)</p><img id="debugMosaicImg" style="max-width:600px;width:100%;border:1px solid #333;" /></div>
+      </div>
+      <pre id="debugLog" style="color:#888;font-size:0.75rem;max-height:200px;overflow-y:auto;margin-top:8px;"></pre>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -315,10 +326,10 @@ function isTileCell(imageData, width, x1, y1, x2, y2) {
 
 function buildTileMosaic(canvas, grid, tilePositions) {
   // Build a labeled mosaic of all detected tiles
-  const cellSize = 60;
-  const labelHeight = 18;
-  const padding = 2;
-  const colsPerRow = 10;
+  const cellSize = 100;
+  const labelHeight = 28;
+  const padding = 6;
+  const colsPerRow = 8;
   const nTiles = tilePositions.length;
   const nRows = Math.ceil(nTiles / colsPerRow);
 
@@ -332,8 +343,6 @@ function buildTileMosaic(canvas, grid, tilePositions) {
   mctx.fillStyle = '#000';
   mctx.fillRect(0, 0, mosaicW, mosaicH);
 
-  const srcCtx = canvas.getContext('2d');
-
   for (let idx = 0; idx < nTiles; idx++) {
     const { row, col, x1, y1, x2, y2 } = tilePositions[idx];
     const gridR = Math.floor(idx / colsPerRow);
@@ -341,15 +350,24 @@ function buildTileMosaic(canvas, grid, tilePositions) {
     const dx = gridC * (cellSize + padding) + padding;
     const dy = gridR * (cellSize + padding + labelHeight) + padding;
 
-    // Draw the cropped tile
-    const srcW = x2 - x1, srcH = y2 - y1;
-    mctx.drawImage(canvas, x1, y1, srcW, srcH, dx, dy, cellSize, cellSize);
-
-    // Draw position label
+    // Draw position label ABOVE the tile with contrast background
     const label = `${row + 1}${String.fromCharCode(65 + col)}`;
-    mctx.fillStyle = '#fff';
-    mctx.font = '12px sans-serif';
-    mctx.fillText(label, dx + 2, dy + cellSize + 14);
+    mctx.fillStyle = '#222';
+    mctx.fillRect(dx, dy, cellSize, labelHeight);
+    mctx.fillStyle = '#ff0';
+    mctx.font = 'bold 18px monospace';
+    mctx.textAlign = 'center';
+    mctx.fillText(label, dx + cellSize / 2, dy + 20);
+    mctx.textAlign = 'left';
+
+    // Draw the cropped tile below the label
+    const srcW = x2 - x1, srcH = y2 - y1;
+    mctx.drawImage(canvas, x1, y1, srcW, srcH, dx, dy + labelHeight, cellSize, cellSize);
+
+    // Draw thin border around the tile
+    mctx.strokeStyle = '#444';
+    mctx.lineWidth = 1;
+    mctx.strokeRect(dx, dy + labelHeight, cellSize, cellSize);
   }
 
   return mosaicCanvas;
@@ -434,13 +452,28 @@ async function analyzeHybrid(imageSource) {
   setStatus('Loading image for CV analysis...', 'loading');
 
   // Step 1: Load image onto canvas
+  // For URL images, fetch as blob first to avoid CORS taint on canvas
+  let imgSrc;
+  if (imageSource.dataUrl) {
+    imgSrc = imageSource.dataUrl;
+  } else {
+    try {
+      const imgResp = await fetch(imageSource.url);
+      const blob = await imgResp.blob();
+      imgSrc = URL.createObjectURL(blob);
+    } catch (e) {
+      // CORS blocked — try with crossOrigin attribute as fallback
+      console.warn('Fetch failed, trying crossOrigin:', e.message);
+      imgSrc = imageSource.url;
+    }
+  }
+
   const img = new Image();
   img.crossOrigin = 'anonymous';
   await new Promise((resolve, reject) => {
     img.onload = resolve;
     img.onerror = () => reject(new Error('Failed to load image'));
-    if (imageSource.dataUrl) img.src = imageSource.dataUrl;
-    else img.src = imageSource.url;
+    img.src = imgSrc;
   });
 
   const cvCanvas = document.createElement('canvas');
@@ -450,7 +483,13 @@ async function analyzeHybrid(imageSource) {
   ctx.drawImage(img, 0, 0);
 
   const w = cvCanvas.width, h = cvCanvas.height;
-  const idata = ctx.getImageData(0, 0, w, h);
+  let idata;
+  try {
+    idata = ctx.getImageData(0, 0, w, h);
+  } catch (e) {
+    console.warn('getImageData failed (CORS tainted canvas):', e.message);
+    return null; // Fall back to full-board vision
+  }
   const pixels = idata.data;
 
   setStatus(`Image loaded (${w}x${h}). Detecting grid...`, 'loading');
@@ -473,8 +512,36 @@ async function analyzeHybrid(imageSource) {
 
   console.log(`Detected ${tilePositions.length} tiles on board`);
 
+  // Debug: draw grid overlay on image
+  const debugCanvas = document.getElementById('debugGridCanvas');
+  debugCanvas.width = w;
+  debugCanvas.height = h;
+  const dctx = debugCanvas.getContext('2d');
+  dctx.drawImage(cvCanvas, 0, 0);
+  // Draw grid lines
+  dctx.strokeStyle = 'rgba(0,255,0,0.5)';
+  dctx.lineWidth = 2;
+  for (let i = 0; i <= 15; i++) {
+    dctx.beginPath(); dctx.moveTo(grid.vGrid[0], grid.hGrid[i]); dctx.lineTo(grid.vGrid[15], grid.hGrid[i]); dctx.stroke();
+    dctx.beginPath(); dctx.moveTo(grid.vGrid[i], grid.hGrid[0]); dctx.lineTo(grid.vGrid[i], grid.hGrid[15]); dctx.stroke();
+  }
+  // Mark detected tiles
+  for (const tp of tilePositions) {
+    dctx.fillStyle = 'rgba(255,255,0,0.3)';
+    dctx.fillRect(tp.x1, tp.y1, tp.x2 - tp.x1, tp.y2 - tp.y1);
+  }
+  document.getElementById('debugSection').classList.remove('hidden');
+
+  let debugLog = `Image: ${w}x${h}\n`;
+  debugLog += `Grid top: ${grid.hGrid[0]}, bottom: ${grid.hGrid[15]}\n`;
+  debugLog += `Grid left: ${grid.vGrid[0]}, right: ${grid.vGrid[15]}\n`;
+  debugLog += `Cell size: ${grid.cellW.toFixed(1)}x${grid.cellH.toFixed(1)}\n`;
+  debugLog += `Tiles detected: ${tilePositions.length}\n`;
+  debugLog += `Positions: ${tilePositions.map(t => `${t.row+1}${String.fromCharCode(65+t.col)}`).join(', ')}\n`;
+
   if (tilePositions.length === 0) {
-    console.warn('No tiles detected, falling back to full-board API');
+    debugLog += 'No tiles detected, falling back to full-board API\n';
+    document.getElementById('debugLog').textContent = debugLog;
     return null;
   }
 
@@ -492,9 +559,9 @@ async function analyzeHybrid(imageSource) {
     }));
 
     // Build a separate rack mosaic with "R1", "R2" labels
-    const rCellSize = 60;
-    const rPad = 2;
-    const rLabelH = 18;
+    const rCellSize = 100;
+    const rPad = 6;
+    const rLabelH = 28;
     const rW = rackPositions.length * (rCellSize + rPad) + rPad;
     const rH = rCellSize + rLabelH + rPad * 2;
     rackMosaicCanvas = document.createElement('canvas');
@@ -506,10 +573,16 @@ async function analyzeHybrid(imageSource) {
     for (let i = 0; i < rackPositions.length; i++) {
       const rp = rackPositions[i];
       const dx = i * (rCellSize + rPad) + rPad;
-      rctx.drawImage(cvCanvas, rp.x1, rp.y1, rp.x2 - rp.x1, rp.y2 - rp.y1, dx, rPad, rCellSize, rCellSize);
-      rctx.fillStyle = '#fff';
-      rctx.font = '12px sans-serif';
-      rctx.fillText(`R${i + 1}`, dx + 2, rPad + rCellSize + 14);
+      // Label above
+      rctx.fillStyle = '#222';
+      rctx.fillRect(dx, rPad, rCellSize, rLabelH);
+      rctx.fillStyle = '#ff0';
+      rctx.font = 'bold 18px monospace';
+      rctx.textAlign = 'center';
+      rctx.fillText(`R${i + 1}`, dx + rCellSize / 2, rPad + 20);
+      rctx.textAlign = 'left';
+      // Tile below
+      rctx.drawImage(cvCanvas, rp.x1, rp.y1, rp.x2 - rp.x1, rp.y2 - rp.y1, dx, rPad + rLabelH, rCellSize, rCellSize);
     }
   }
 
@@ -535,11 +608,15 @@ async function analyzeHybrid(imageSource) {
 
   const mosaicDataUrl = combinedCanvas.toDataURL('image/png');
 
+  // Debug: show mosaic
+  document.getElementById('debugMosaicImg').src = mosaicDataUrl;
+
   // Build position list for prompt
   const boardPosLabels = tilePositions.map(t => `${t.row + 1}${String.fromCharCode(65 + t.col)}`);
   const rackPosLabels = rackTileBoxes.map((_, i) => `R${i + 1}`);
   const allLabels = [...boardPosLabels, ...rackPosLabels];
 
+  debugLog += `Rack tiles detected: ${rackTileBoxes.length}\n`;
   setStatus(`Sending ${allLabels.length} tile mosaic to GPT-4o for letter recognition...`, 'loading');
 
   const key = getKey();
@@ -547,18 +624,21 @@ async function analyzeHybrid(imageSource) {
 
   const model = document.getElementById('modelSelect').value;
 
-  const letterPrompt = `This image shows ${allLabels.length} Crossplay/Scrabble tiles arranged in a grid mosaic.
-Each tile is a blue square with a white letter and a small superscript number (point value).
-Below each tile is a position label.
+  const positionsList = allLabels.join(', ');
+  const letterPrompt = `This image shows ${allLabels.length} Crossplay/Scrabble tiles arranged in rows.
+Each tile has a YELLOW LABEL ABOVE it showing its position, and the TILE IMAGE BELOW it.
+The tile is a blue square with a single large WHITE LETTER and a small superscript number.
 
-Board tile labels use format "RowCol" (e.g. "5H" = row 5, column H).
-Rack tile labels use format "R1", "R2", etc.
+The tile positions in order are: ${positionsList}
 
-For each tile, read the single letter (A-Z) on it.
-If the superscript number is 0, it is a BLANK tile — use lowercase for blanks.
+For each labeled tile, identify:
+1. The large white letter (A-Z) on the blue tile
+2. Whether the small superscript number in the top-right corner is 0 (meaning blank tile)
 
-Output ONLY a JSON object mapping each label to its letter.
-Example: {"5H": "M", "8A": "G", "R1": "W", "R2": "l"}`;
+Use UPPERCASE for normal tiles, lowercase for blanks (superscript = 0).
+
+Output ONLY a JSON object mapping each position label to its letter.
+Example: {"4E": "V", "5H": "H", "R1": "W", "R3": "l"}`;
 
   const body = {
     model,
@@ -588,8 +668,13 @@ Example: {"5H": "M", "8A": "G", "R1": "W", "R2": "l"}`;
   }
 
   const data = await resp.json();
-  const letterMap = JSON.parse(data.choices[0].message.content);
+  const rawContent = data.choices[0].message.content;
+  console.log('Raw API response:', rawContent);
+  const letterMap = JSON.parse(rawContent);
   console.log('Letter map from API:', letterMap);
+
+  debugLog += `API response: ${rawContent}\n`;
+  document.getElementById('debugLog').textContent = debugLog;
 
   // Step 7: Assemble grid
   const boardGrid = Array(15).fill(null).map(() => '.'.repeat(15).split(''));

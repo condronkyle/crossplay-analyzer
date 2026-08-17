@@ -200,150 +200,29 @@ function isBlueHsv(h, s, v) {
 }
 
 function detectBoardGrid(imageData, width, height) {
-  // Search band: 25%-75% of height for blue pixels
-  const searchTop = Math.floor(height * 0.25);
-  const searchBottom = Math.floor(height * 0.75);
+  // Width prior: board spans ~96% of image width, centered (matches Python CV reference)
+  const BOARD_WIDTH_FRAC = 0.96;
+  const cellW = width * BOARD_WIDTH_FRAC / 15;
+  const cellH = cellW; // square cells
+  const gridLeft = (width - 15 * cellW) / 2;
 
-  // Build x-profile and y-profile of blue pixel density simultaneously
-  const xProfile = new Float32Array(width);
+  // Search band: 30%-70% of height for blue pixels
+  const searchTop = Math.floor(height * 0.30);
+  const searchBottom = Math.floor(height * 0.70);
+
+  // Build y-profile of blue pixel density
   const yProfile = new Float32Array(searchBottom - searchTop);
-
   for (let y = searchTop; y < searchBottom; y++) {
-    let rowBlue = 0;
+    let blueCount = 0;
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 4;
       const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
-      if (h >= 95 && h <= 135 && s >= 60 && v >= 80) {
-        rowBlue++;
-        xProfile[x]++;
-      }
+      if (h >= 95 && h <= 135 && s >= 80 && v >= 80) blueCount++;
     }
-    yProfile[y - searchTop] = rowBlue;
+    yProfile[y - searchTop] = blueCount;
   }
 
-  const totalBlue = xProfile.reduce((a, b) => a + b, 0);
-  if (totalBlue === 0) {
-    console.warn('No blue tiles found, using fallback grid');
-    return fallbackGrid(width, height);
-  }
-
-  // ── Find tile column centers from x-profile peaks ──────────────────
-  // Smooth the x-profile to find broad peaks (tile columns)
-  const smoothRadius = Math.max(3, Math.floor(width / 100));
-  const smoothed = new Float32Array(width);
-  for (let x = 0; x < width; x++) {
-    let sum = 0, count = 0;
-    for (let dx = -smoothRadius; dx <= smoothRadius; dx++) {
-      const xx = x + dx;
-      if (xx >= 0 && xx < width) { sum += xProfile[xx]; count++; }
-    }
-    smoothed[x] = sum / count;
-  }
-
-  // Find peaks: local maxima above a threshold
-  // Threshold: must have blue density > 10% of search band height (multiple tile rows)
-  const peakThresh = (searchBottom - searchTop) * 0.08;
-  const peaks = []; // x-positions of column centers
-  let inPeak = false, peakStart = 0, peakMax = 0, peakMaxX = 0;
-  for (let x = 0; x < width; x++) {
-    if (smoothed[x] > peakThresh) {
-      if (!inPeak) { inPeak = true; peakStart = x; peakMax = 0; }
-      if (smoothed[x] > peakMax) { peakMax = smoothed[x]; peakMaxX = x; }
-    } else {
-      if (inPeak) {
-        const peakCenter = Math.round((peakStart + x - 1) / 2);
-        peaks.push(peakCenter);
-        inPeak = false;
-      }
-    }
-  }
-  if (inPeak) {
-    peaks.push(Math.round((peakStart + width - 1) / 2));
-  }
-
-  console.log(`Blue x-profile: ${peaks.length} column peaks at x=[${peaks.join(',')}]`);
-
-  // ── Determine cellW from peak spacing ──────────────────────────────
-  let cellW;
-  if (peaks.length >= 2) {
-    // Compute all adjacent peak spacings
-    const spacings = [];
-    for (let i = 1; i < peaks.length; i++) {
-      spacings.push(peaks[i] - peaks[i - 1]);
-    }
-    spacings.sort((a, b) => a - b);
-
-    // The minimum spacing (between adjacent tile columns) = cellW
-    // But there might be gaps (empty columns between tiles), so the min
-    // spacing is cellW and larger spacings are multiples of cellW.
-    // Use the smallest spacing as cellW estimate.
-    const minSpacing = spacings[0];
-
-    // Refine: check if other spacings are near-integer multiples of minSpacing
-    // If not, try cellW = minSpacing, minSpacing/2, etc.
-    cellW = minSpacing;
-
-    // Verify: all spacings should be close to integer multiples of cellW
-    let good = true;
-    for (const sp of spacings) {
-      const ratio = sp / cellW;
-      const frac = Math.abs(ratio - Math.round(ratio));
-      if (frac > 0.15) { good = false; break; }
-    }
-
-    if (!good) {
-      // Try half the minimum spacing
-      const halfCell = minSpacing / 2;
-      let goodHalf = true;
-      for (const sp of spacings) {
-        const ratio = sp / halfCell;
-        const frac = Math.abs(ratio - Math.round(ratio));
-        if (frac > 0.15) { goodHalf = false; break; }
-      }
-      if (goodHalf && halfCell > width / 30) {
-        cellW = halfCell;
-      }
-    }
-  } else {
-    // Only 0-1 peaks: fall back to width-based estimate
-    cellW = width * 0.96 / 15;
-  }
-
-  const cellH = cellW; // square cells
-
-  // ── Determine gridLeft from peak positions ─────────────────────────
-  // Each peak should be at gridLeft + (col + 0.5) * cellW for some integer col.
-  // Try different gridLeft offsets and pick the one with best peak alignment.
-  let bestGridLeft = 0;
-  let bestAlignScore = Infinity;
-
-  // The first peak is at some column index. Try each possible column for it.
-  if (peaks.length >= 1) {
-    for (let firstCol = 0; firstCol < 15; firstCol++) {
-      const tryGridLeft = peaks[0] - (firstCol + 0.5) * cellW;
-      // Check that all peaks align to integer columns
-      let score = 0;
-      for (const px of peaks) {
-        const col = (px - tryGridLeft) / cellW - 0.5;
-        const frac = Math.abs(col - Math.round(col));
-        score += frac * frac;
-      }
-      // Also check grid fits within image
-      const gridRight = tryGridLeft + 15 * cellW;
-      if (tryGridLeft < -cellW || gridRight > width + cellW) continue;
-
-      if (score < bestAlignScore) {
-        bestAlignScore = score;
-        bestGridLeft = tryGridLeft;
-      }
-    }
-  } else {
-    bestGridLeft = (width - 15 * cellW) / 2;
-  }
-
-  const gridLeft = bestGridLeft;
-
-  console.log(`Grid detection: cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, peaks=${peaks.length}`);
+  console.log(`Grid detection: cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, boardWidth=${(15*cellW).toFixed(0)}px (${(BOARD_WIDTH_FRAC*100).toFixed(0)}%)`);
 
   // ── Determine grid top from y-profile ──────────────────────────────
   const tileRowThresh = width * 0.05;
@@ -493,6 +372,11 @@ function buildTileMosaic(canvas, grid, tilePositions) {
     // Draw the cropped tile below the label
     const srcW = x2 - x1, srcH = y2 - y1;
     mctx.drawImage(canvas, x1, y1, srcW, srcH, dx, dy + labelHeight, cellSize, cellSize);
+
+    // Mask the superscript number (top-right ~35% x 35% of tile)
+    // This prevents GPT-4o from confusing point values with letters
+    mctx.fillStyle = '#3a7abd'; // approximate Crossplay tile blue
+    mctx.fillRect(dx + cellSize * 0.55, dy + labelHeight, cellSize * 0.45, cellSize * 0.38);
 
     // Draw thin border around the tile
     mctx.strokeStyle = '#444';
@@ -712,6 +596,9 @@ async function analyzeHybrid(imageSource) {
       rctx.textAlign = 'left';
       // Tile below
       rctx.drawImage(cvCanvas, rp.x1, rp.y1, rp.x2 - rp.x1, rp.y2 - rp.y1, dx, rPad + rLabelH, rCellSize, rCellSize);
+      // Mask superscript
+      rctx.fillStyle = '#3a7abd';
+      rctx.fillRect(dx + rCellSize * 0.55, rPad + rLabelH, rCellSize * 0.45, rCellSize * 0.38);
     }
   }
 
@@ -754,20 +641,14 @@ async function analyzeHybrid(imageSource) {
   const model = document.getElementById('modelSelect').value;
 
   const positionsList = allLabels.join(', ');
-  const letterPrompt = `This image shows ${allLabels.length} Crossplay/Scrabble tiles arranged in rows.
-Each tile has a YELLOW LABEL ABOVE it showing its position, and the TILE IMAGE BELOW it.
-The tile is a blue square with a single large WHITE LETTER and a small superscript number.
+  const letterPrompt = `This image shows ${allLabels.length} Scrabble tiles in a grid. Each tile has a YELLOW LABEL above it and a BLUE TILE below it. Each blue tile has exactly ONE large WHITE LETTER in the center.
 
-The tile positions in order are: ${positionsList}
+The tiles in order are: ${positionsList}
 
-For each labeled tile, identify:
-1. The large white letter (A-Z) on the blue tile
-2. Whether the small superscript number in the top-right corner is 0 (meaning blank tile)
+Read the single large white letter on each blue tile. Ignore any small markings — focus ONLY on the main letter.
 
-Use UPPERCASE for normal tiles, lowercase for blanks (superscript = 0).
-
-Output ONLY a JSON object mapping each position label to its letter.
-Example: {"4E": "V", "5H": "H", "R1": "W", "R3": "l"}`;
+Output a JSON object mapping each label to its letter (A-Z uppercase).
+Example: {"4G": "V", "5H": "M", "R1": "W"}`;
 
   const body = {
     model,

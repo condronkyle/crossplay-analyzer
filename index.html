@@ -207,8 +207,6 @@ function detectBoardGrid(imageData, width, height) {
   // Build x-profile and y-profile of blue pixel density simultaneously
   const xProfile = new Float32Array(width);
   const yProfile = new Float32Array(searchBottom - searchTop);
-  // Collect all blue pixel x,y for alignment scoring
-  const blueXs = [];
 
   for (let y = searchTop; y < searchBottom; y++) {
     let rowBlue = 0;
@@ -218,80 +216,134 @@ function detectBoardGrid(imageData, width, height) {
       if (h >= 95 && h <= 135 && s >= 60 && v >= 80) {
         rowBlue++;
         xProfile[x]++;
-        blueXs.push(x);
       }
     }
     yProfile[y - searchTop] = rowBlue;
   }
 
-  if (blueXs.length === 0) {
+  const totalBlue = xProfile.reduce((a, b) => a + b, 0);
+  if (totalBlue === 0) {
     console.warn('No blue tiles found, using fallback grid');
     return fallbackGrid(width, height);
   }
 
-  // ── Determine board left/right from x-profile ──────────────────────
-  // Find the leftmost and rightmost x-positions with significant blue density
-  const xThresh = (searchBottom - searchTop) * 0.02; // at least 2% of search height has blue
-  let boardLeft = 0, boardRight = width - 1;
+  // ── Find tile column centers from x-profile peaks ──────────────────
+  // Smooth the x-profile to find broad peaks (tile columns)
+  const smoothRadius = Math.max(3, Math.floor(width / 100));
+  const smoothed = new Float32Array(width);
   for (let x = 0; x < width; x++) {
-    if (xProfile[x] > xThresh) { boardLeft = x; break; }
+    let sum = 0, count = 0;
+    for (let dx = -smoothRadius; dx <= smoothRadius; dx++) {
+      const xx = x + dx;
+      if (xx >= 0 && xx < width) { sum += xProfile[xx]; count++; }
+    }
+    smoothed[x] = sum / count;
   }
-  for (let x = width - 1; x >= 0; x--) {
-    if (xProfile[x] > xThresh) { boardRight = x; break; }
-  }
 
-  // The blue pixels are INSIDE tiles, so boardLeft is the left edge of the
-  // leftmost tile and boardRight is the right edge of the rightmost tile.
-  // We need to expand slightly to get the full cell boundaries.
-  // Tiles are inset ~4% from cell edges, so expand by ~4% of cell width.
-  const rawBoardWidth = boardRight - boardLeft;
-  // Estimate cellW from the raw blue span — tiles span at most 15 columns
-  // but might not fill all columns. Use the full span as the board width
-  // (leftmost tile left edge to rightmost tile right edge).
-  // If the leftmost tile is in column A and rightmost in column O,
-  // the span covers ~15 cells minus small margins.
-  // Try different column spans and pick the one that best aligns blue pixels.
-
-  // Simple approach: assume blue spans from column A left edge to column O right edge
-  // (most screenshots have tiles near both edges — premium labels etc.)
-  // cellW = rawBoardWidth / 15
-  // But if only a few tiles exist, the span could be smaller than 15 columns.
-
-  // Better approach: try multiple cellW values and score alignment
-  let bestCellW = rawBoardWidth / 15;
-  let bestGridLeft = boardLeft;
-  let bestScore = Infinity;
-
-  // Try cellW values from rawBoardWidth/15 to rawBoardWidth/8
-  // (board could span 8 to 15 columns worth of tiles)
-  for (let nCols = 8; nCols <= 15; nCols++) {
-    const tryCellW = rawBoardWidth / nCols;
-    // For each nCols, try different alignments (which column is boardLeft?)
-    for (let startCol = 0; startCol <= 15 - nCols; startCol++) {
-      const tryGridLeft = boardLeft - startCol * tryCellW;
-      // Score: how well do blue pixels align to cell centers?
-      let score = 0;
-      const sampleStep = Math.max(1, Math.floor(blueXs.length / 500));
-      for (let i = 0; i < blueXs.length; i += sampleStep) {
-        const col = (blueXs[i] - tryGridLeft) / tryCellW;
-        const frac = col - Math.floor(col);
-        // Pixels should cluster in the middle of cells (0.1 to 0.9), not on edges (0, 1)
-        const edgeDist = Math.min(frac, 1 - frac);
-        if (edgeDist < 0.08) score += 1; // penalty for being on grid line
-      }
-      if (score < bestScore) {
-        bestScore = score;
-        bestCellW = tryCellW;
-        bestGridLeft = tryGridLeft;
+  // Find peaks: local maxima above a threshold
+  // Threshold: must have blue density > 10% of search band height (multiple tile rows)
+  const peakThresh = (searchBottom - searchTop) * 0.08;
+  const peaks = []; // x-positions of column centers
+  let inPeak = false, peakStart = 0, peakMax = 0, peakMaxX = 0;
+  for (let x = 0; x < width; x++) {
+    if (smoothed[x] > peakThresh) {
+      if (!inPeak) { inPeak = true; peakStart = x; peakMax = 0; }
+      if (smoothed[x] > peakMax) { peakMax = smoothed[x]; peakMaxX = x; }
+    } else {
+      if (inPeak) {
+        const peakCenter = Math.round((peakStart + x - 1) / 2);
+        peaks.push(peakCenter);
+        inPeak = false;
       }
     }
   }
+  if (inPeak) {
+    peaks.push(Math.round((peakStart + width - 1) / 2));
+  }
 
-  const cellW = bestCellW;
+  console.log(`Blue x-profile: ${peaks.length} column peaks at x=[${peaks.join(',')}]`);
+
+  // ── Determine cellW from peak spacing ──────────────────────────────
+  let cellW;
+  if (peaks.length >= 2) {
+    // Compute all adjacent peak spacings
+    const spacings = [];
+    for (let i = 1; i < peaks.length; i++) {
+      spacings.push(peaks[i] - peaks[i - 1]);
+    }
+    spacings.sort((a, b) => a - b);
+
+    // The minimum spacing (between adjacent tile columns) = cellW
+    // But there might be gaps (empty columns between tiles), so the min
+    // spacing is cellW and larger spacings are multiples of cellW.
+    // Use the smallest spacing as cellW estimate.
+    const minSpacing = spacings[0];
+
+    // Refine: check if other spacings are near-integer multiples of minSpacing
+    // If not, try cellW = minSpacing, minSpacing/2, etc.
+    cellW = minSpacing;
+
+    // Verify: all spacings should be close to integer multiples of cellW
+    let good = true;
+    for (const sp of spacings) {
+      const ratio = sp / cellW;
+      const frac = Math.abs(ratio - Math.round(ratio));
+      if (frac > 0.15) { good = false; break; }
+    }
+
+    if (!good) {
+      // Try half the minimum spacing
+      const halfCell = minSpacing / 2;
+      let goodHalf = true;
+      for (const sp of spacings) {
+        const ratio = sp / halfCell;
+        const frac = Math.abs(ratio - Math.round(ratio));
+        if (frac > 0.15) { goodHalf = false; break; }
+      }
+      if (goodHalf && halfCell > width / 30) {
+        cellW = halfCell;
+      }
+    }
+  } else {
+    // Only 0-1 peaks: fall back to width-based estimate
+    cellW = width * 0.96 / 15;
+  }
+
   const cellH = cellW; // square cells
+
+  // ── Determine gridLeft from peak positions ─────────────────────────
+  // Each peak should be at gridLeft + (col + 0.5) * cellW for some integer col.
+  // Try different gridLeft offsets and pick the one with best peak alignment.
+  let bestGridLeft = 0;
+  let bestAlignScore = Infinity;
+
+  // The first peak is at some column index. Try each possible column for it.
+  if (peaks.length >= 1) {
+    for (let firstCol = 0; firstCol < 15; firstCol++) {
+      const tryGridLeft = peaks[0] - (firstCol + 0.5) * cellW;
+      // Check that all peaks align to integer columns
+      let score = 0;
+      for (const px of peaks) {
+        const col = (px - tryGridLeft) / cellW - 0.5;
+        const frac = Math.abs(col - Math.round(col));
+        score += frac * frac;
+      }
+      // Also check grid fits within image
+      const gridRight = tryGridLeft + 15 * cellW;
+      if (tryGridLeft < -cellW || gridRight > width + cellW) continue;
+
+      if (score < bestAlignScore) {
+        bestAlignScore = score;
+        bestGridLeft = tryGridLeft;
+      }
+    }
+  } else {
+    bestGridLeft = (width - 15 * cellW) / 2;
+  }
+
   const gridLeft = bestGridLeft;
 
-  console.log(`Grid detection: boardLeft=${boardLeft}, boardRight=${boardRight}, rawWidth=${rawBoardWidth}, cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}`);
+  console.log(`Grid detection: cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, peaks=${peaks.length}`);
 
   // ── Determine grid top from y-profile ──────────────────────────────
   const tileRowThresh = width * 0.05;

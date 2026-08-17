@@ -9,7 +9,8 @@ import numpy as np
 from PIL import Image
 
 # Ground truth for test_board.png (https://i.imgur.com/qworrOn.png)
-# Verified against parse_board_cv.py output (96% width prior with python CV)
+# Verified against the premium-label grid detector (31/31 tiles, 0 false positives).
+# 31 tiles total.
 GROUND_TRUTH = {
     # (row, col): letter  — 0-indexed
     (3, 6): 'V', (3, 7): 'A', (3, 8): 'T', (3, 13): 'W',
@@ -22,7 +23,6 @@ GROUND_TRUTH = {
     (8, 8): 'P', (8, 9): 'U', (8, 10): 'R', (8, 11): 'E', (8, 14): 'R',
     (9, 14): 'I', (10, 14): 'N', (11, 14): 'G',
 }
-# Total: 31 tiles (Python CV found 31; W at N4 makes 32 — verify)
 
 
 def rgb_to_hsv(r, g, b):
@@ -44,12 +44,99 @@ def rgb_to_hsv(r, g, b):
     return round(h), s, v
 
 
-def is_blue_hsv(h, s, v):
-    return 95 <= h <= 135 and s >= 80 and v >= 80
-
-
 def detect_board_grid(pixels, width, height):
-    """Port of JS detectBoardGrid — 96% width prior (matches Python CV reference)."""
+    """Deterministic grid detection for the NYT Crossplay board.
+
+    The board is a FIXED 15x15 template whose premium squares carry dark text
+    labels ("3W"/"2L") on pale pastel backgrounds. The labels are always present
+    (even with no tiles), so they are stable, state-independent anchors.
+
+    Every board row and column has at least one label, so the label rows are
+    spaced exactly one cell apart. The row projection has clean gaps between
+    rows (labels are row-confined), which gives cellH and gridTop exactly. The
+    board is square, so cellW = cellH; gridLeft comes from the label column
+    extent (robust to a few px). Resolution-independent. Falls back to the
+    prior-based heuristic if labels can't be found.
+    """
+    # Premium label mask: dark, saturated pixels (the "3W"/"2L" glyphs).
+    # Excludes white tile letters (bright), pale pastel backgrounds (low
+    # saturation), and blue tiles (bright blue).
+    r, g, b = pixels[:, :, 0], pixels[:, :, 1], pixels[:, :, 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    sat = mx - mn
+    label = (mx < 190) & (sat > 30)
+    label_count = int(label.sum())
+    if label_count < width * 0.02:
+        print("  Premium labels not found, falling back to prior-based grid")
+        return detect_board_grid_prior(pixels, width, height)
+
+    # Row projection of labels
+    row_proj = label.sum(axis=1)
+    max_row = row_proj.max()
+
+    # Contiguous runs of rows with label density
+    row_thresh = max(3, max_row * 0.01)
+    in_run = row_proj > row_thresh
+    runs = []
+    start = None
+    for i in range(height):
+        if in_run[i] and start is None:
+            start = i
+        elif not in_run[i] and start is not None:
+            if i - start >= 10:
+                runs.append((start, i - 1))
+            start = None
+    if start is not None and height - start >= 10:
+        runs.append((start, height - 1))
+    if len(runs) < 3:
+        print("  Too few label rows, falling back to prior-based grid")
+        return detect_board_grid_prior(pixels, width, height)
+
+    # Cluster runs by proximity; the board is the largest cluster (its ~15 rows
+    # are spaced ~cellH apart; UI text below is separated by a big gap).
+    clusters = [[runs[0]]]
+    for run in runs[1:]:
+        if run[0] - clusters[-1][-1][1] < 150:
+            clusters[-1].append(run)
+        else:
+            clusters.append([run])
+    board_runs = max(clusters, key=len)
+    if len(board_runs) < 3:
+        print("  Board label cluster too small, falling back to prior-based grid")
+        return detect_board_grid_prior(pixels, width, height)
+
+    # cellH = median spacing between consecutive board row centers; gridTop from first.
+    centers = sorted([(a + b) / 2 for (a, b) in board_runs])
+    spacings = np.diff(centers)
+    cell_h = float(np.median(spacings))
+    grid_top = centers[0] - 0.5 * cell_h
+    cell_w = cell_h  # square board
+
+    # Horizontal: label column extent (restricted to the board band) -> gridLeft
+    band_top = max(0, int(grid_top))
+    band_bottom = min(height - 1, int(np.ceil(grid_top + 15 * cell_h)))
+    col_proj = label[band_top:band_bottom, :].sum(axis=0)
+    max_col = col_proj.max()
+    col_thresh = max(3, max_col * 0.05)
+    cols = np.where(col_proj > col_thresh)[0]
+    if len(cols) == 0:
+        print("  Label column extent not found, falling back to prior-based grid")
+        return detect_board_grid_prior(pixels, width, height)
+    # Labels are inset from cell edges by ~0.13 cell; robust to a wide range.
+    grid_left = cols[0] - 0.13 * cell_w
+
+    h_grid = [max(0, min(height - 1, round(grid_top + i * cell_h))) for i in range(16)]
+    v_grid = [max(0, min(width - 1, round(grid_left + i * cell_w))) for i in range(16)]
+
+    print(f"  cellW={cell_w:.1f}, cellH={cell_h:.1f}, gridLeft={grid_left:.1f}, gridTop={grid_top:.1f}")
+    print(f"  Grid spans {v_grid[0]}-{v_grid[15]} x {h_grid[0]}-{h_grid[15]}")
+    print(f"  Board width = {15*cell_w:.0f}px = {15*cell_w/width*100:.1f}% of image")
+
+    return h_grid, v_grid, cell_w, cell_h
+
+def detect_board_grid_prior(pixels, width, height):
+    """Original heuristic fallback: 96% width prior + anchor to expectedBoardTop."""
     BOARD_WIDTH_FRAC = 0.96
     cell_w = width * BOARD_WIDTH_FRAC / 15
     cell_h = cell_w
@@ -81,7 +168,6 @@ def detect_board_grid(pixels, width, height):
         print("ERROR: No tile rows found")
         return None
 
-    # Anchor to expectedBoardTop (~29% of height, matching Python CV reference)
     expected_board_top = height * 0.29
     grid_top_min = height * 0.10
     grid_top_max = height * 0.40
@@ -111,7 +197,10 @@ def detect_board_grid(pixels, width, height):
 
 
 def is_tile_cell(pixels, width, x1, y1, x2, y2):
-    """Check if a cell contains a blue tile."""
+    """A tile = blue background + a large white letter in the center. Premium
+    squares are also blue but only carry small white '3L'/'2W' text, so the
+    white-letter check deterministically distinguishes tiles from premium
+    squares even when their blues overlap."""
     margin_x = max(2, round((x2 - x1) * 0.08))
     margin_y = max(2, round((y2 - y1) * 0.08))
     sx1, sy1 = x1 + margin_x, y1 + margin_y
@@ -129,26 +218,39 @@ def is_tile_cell(pixels, width, x1, y1, x2, y2):
             r, g, b = pixels[y, x, 0], pixels[y, x, 1], pixels[y, x, 2]
             h, s, v = rgb_to_hsv(r, g, b)
             total_count += 1
-            if is_blue_hsv(h, s, v):
+            if 95 <= h <= 135 and s >= 60 and v >= 60:
                 blue_count += 1
 
     blue_ratio = blue_count / total_count if total_count > 0 else 0
-    if blue_ratio <= 0.25:
+    if blue_ratio <= 0.20:
         return False
 
-    # Check blue width span
-    dense_col_count = 0
-    for c in range(cell_w):
-        col_blue = 0
-        for y in range(sy1, sy2):
-            r, g, b = pixels[y, sx1 + c, 0], pixels[y, sx1 + c, 1], pixels[y, sx1 + c, 2]
+    # White letter in the center region (middle 50% of the cell). A tile's
+    # letter is large and tall; premium text ('3L') is small and short.
+    cx1, cy1 = round(sx1 + cell_w * 0.25), round(sy1 + cell_h * 0.25)
+    cx2, cy2 = round(sx1 + cell_w * 0.75), round(sy1 + cell_h * 0.75)
+    center_white = 0
+    center_total = 0
+    white_min_y = float('inf')
+    white_max_y = -float('inf')
+    for y in range(cy1, cy2):
+        for x in range(cx1, cx2):
+            r, g, b = pixels[y, x, 0], pixels[y, x, 1], pixels[y, x, 2]
             h, s, v = rgb_to_hsv(r, g, b)
-            if is_blue_hsv(h, s, v):
-                col_blue += 1
-        if col_blue > cell_h * 0.10:
-            dense_col_count += 1
-
-    return (dense_col_count / cell_w) >= 0.35
+            center_total += 1
+            if v >= 200 and s <= 80:
+                center_white += 1
+                white_min_y = min(white_min_y, y)
+                white_max_y = max(white_max_y, y)
+    if center_total == 0:
+        return False
+    white_frac = center_white / center_total
+    if white_frac < 0.04:
+        return False
+    white_span = (white_max_y - white_min_y) / (cy2 - cy1)
+    if white_span < 0.5:
+        return False
+    return True
 
 
 def test_grid_detection(image_path):

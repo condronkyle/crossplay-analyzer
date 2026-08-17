@@ -195,22 +195,145 @@ function rgbToHsv(r, g, b) {
   return [Math.round(h), Math.round(s), Math.round(v)];
 }
 
-function isBlueHsv(h, s, v) {
-  return h >= 95 && h <= 135 && s >= 80 && v >= 80;
+// ── Premium label detection (NYT Crossplay) ─────────────────────────────
+// The NYT Crossplay board is a FIXED 15x15 template whose premium squares
+// carry dark text labels ("3W"/"2L") on pale pastel backgrounds. The labels
+// are always present (even with no tiles), so they are stable, state-
+// independent anchors for grid detection — unlike blue tiles, which depend
+// on the current board state.
+//
+// Every board row and column has at least one label, so the label rows are
+// spaced exactly one cell apart. The row projection has clean gaps between
+// rows (labels are row-confined), which gives cellH and gridTop exactly.
+// The board is square, so cellW = cellH; gridLeft comes from the label
+// column extent (robust to a few px). This is resolution-independent.
+// Falls back to the prior-based heuristic if labels can't be found.
+function detectBoardGrid(imageData, width, height) {
+  // Premium label mask: dark, saturated pixels (the "3W"/"2L" glyphs).
+  // Excludes white tile letters (bright), pale pastel backgrounds (low
+  // saturation), and blue tiles (bright blue).
+  const labelMask = new Uint8Array(width * height);
+  let labelCount = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+      if (v < 190 && s > 30) {
+        labelMask[y * width + x] = 1;
+        labelCount++;
+      }
+    }
+  }
+
+  if (labelCount < width * 0.02) {
+    console.warn('Premium labels not found, falling back to prior-based grid');
+    return detectBoardGridPrior(imageData, width, height);
+  }
+
+  // Row projection of labels
+  const rowProj = new Float32Array(height);
+  let maxRow = 0;
+  for (let y = 0; y < height; y++) {
+    let c = 0;
+    for (let x = 0; x < width; x++) c += labelMask[y * width + x];
+    rowProj[y] = c;
+    if (c > maxRow) maxRow = c;
+  }
+
+  // Contiguous runs of rows with label density
+  const rowThresh = Math.max(3, maxRow * 0.01);
+  const runs = [];
+  let start = -1;
+  for (let y = 0; y < height; y++) {
+    if (rowProj[y] > rowThresh) {
+      if (start < 0) start = y;
+    } else if (start >= 0) {
+      if (y - start >= 10) runs.push([start, y - 1]);
+      start = -1;
+    }
+  }
+  if (start >= 0 && height - start >= 10) runs.push([start, height - 1]);
+  if (runs.length < 3) {
+    console.warn('Too few label rows, falling back to prior-based grid');
+    return detectBoardGridPrior(imageData, width, height);
+  }
+
+  // Cluster runs by proximity; the board is the largest cluster (its ~15
+  // rows are spaced ~cellH apart; UI text below is separated by a big gap).
+  const clusters = [[runs[0]]];
+  for (let i = 1; i < runs.length; i++) {
+    const last = clusters[clusters.length - 1];
+    if (runs[i][0] - last[last.length - 1][1] < 150) last.push(runs[i]);
+    else clusters.push([runs[i]]);
+  }
+  let boardRuns = clusters[0];
+  for (const cl of clusters) if (cl.length > boardRuns.length) boardRuns = cl;
+  if (boardRuns.length < 3) {
+    console.warn('Board label cluster too small, falling back to prior-based grid');
+    return detectBoardGridPrior(imageData, width, height);
+  }
+
+  // cellH = median spacing between consecutive board row centers; gridTop from first.
+  const centers = boardRuns.map(([a, b]) => (a + b) / 2).sort((a, b) => a - b);
+  const spacings = [];
+  for (let i = 1; i < centers.length; i++) spacings.push(centers[i] - centers[i - 1]);
+  const cellH = medianOf(spacings);
+  const gridTop = centers[0] - 0.5 * cellH;
+  const cellW = cellH; // square board
+
+  // Horizontal: label column extent (restricted to the board band) -> gridLeft
+  const bandTop = Math.max(0, Math.floor(gridTop));
+  const bandBottom = Math.min(height - 1, Math.ceil(gridTop + 15 * cellH));
+  const colProj = new Float32Array(width);
+  for (let y = bandTop; y < bandBottom; y++) {
+    for (let x = 0; x < width; x++) {
+      if (labelMask[y * width + x]) colProj[x]++;
+    }
+  }
+  let maxCol = 0;
+  for (let x = 0; x < width; x++) if (colProj[x] > maxCol) maxCol = colProj[x];
+  const colThresh = Math.max(3, maxCol * 0.05);
+  let textLeft = -1, textRight = -1;
+  for (let x = 0; x < width; x++) {
+    if (colProj[x] > colThresh) { if (textLeft < 0) textLeft = x; textRight = x; }
+  }
+  if (textLeft < 0) {
+    console.warn('Label column extent not found, falling back to prior-based grid');
+    return detectBoardGridPrior(imageData, width, height);
+  }
+  // Labels are inset from cell edges by ~0.13 cell; the result is robust to
+  // a wide range of this constant.
+  const gridLeft = textLeft - 0.13 * cellW;
+
+  // Build grid lines (15 square cells)
+  const hGrid = [], vGrid = [];
+  for (let i = 0; i <= 15; i++) {
+    hGrid.push(Math.max(0, Math.min(height - 1, Math.round(gridTop + i * cellH))));
+    vGrid.push(Math.max(0, Math.min(width - 1, Math.round(gridLeft + i * cellW))));
+  }
+
+  console.log(`Grid detection (premium-label): cellW=${cellW.toFixed(1)} cellH=${cellH.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, gridTop=${gridTop.toFixed(1)}, boardWidth=${(15*cellW).toFixed(0)}px (${(15*cellW/width*100).toFixed(1)}% of image)`);
+
+  return { hGrid, vGrid, cellW, cellH, method: 'premium' };
 }
 
-function detectBoardGrid(imageData, width, height) {
-  // Width prior: board spans ~96% of image width, centered (matches Python CV reference)
+function medianOf(arr) {
+  if (arr.length === 0) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+function detectBoardGridPrior(imageData, width, height) {
+  // Original heuristic fallback: width prior + anchor to expectedBoardTop.
+  // Kept as a safety net when premium anchors can't be found.
   const BOARD_WIDTH_FRAC = 0.96;
   const cellW = width * BOARD_WIDTH_FRAC / 15;
   const cellH = cellW; // square cells
   const gridLeft = (width - 15 * cellW) / 2;
 
-  // Search band: 30%-70% of height for blue pixels
   const searchTop = Math.floor(height * 0.30);
   const searchBottom = Math.floor(height * 0.70);
 
-  // Build y-profile of blue pixel density
   const yProfile = new Float32Array(searchBottom - searchTop);
   for (let y = searchTop; y < searchBottom; y++) {
     let blueCount = 0;
@@ -222,9 +345,8 @@ function detectBoardGrid(imageData, width, height) {
     yProfile[y - searchTop] = blueCount;
   }
 
-  console.log(`Grid detection: cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, boardWidth=${(15*cellW).toFixed(0)}px (${(BOARD_WIDTH_FRAC*100).toFixed(0)}%)`);
+  console.log(`Grid detection (prior fallback): cellW=${cellW.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, boardWidth=${(15*cellW).toFixed(0)}px (${(BOARD_WIDTH_FRAC*100).toFixed(0)}%)`);
 
-  // ── Determine grid top from y-profile ──────────────────────────────
   const tileRowThresh = width * 0.10;
   let firstTileY = -1;
   for (let i = 0; i < yProfile.length; i++) {
@@ -238,8 +360,6 @@ function detectBoardGrid(imageData, width, height) {
     return fallbackGrid(width, height);
   }
 
-  // Snap grid top: try each possible row offset for the topmost tile
-  // Anchor to expectedBoardTop (~29% of height, matching Python CV reference)
   const expectedBoardTop = height * 0.29;
   const gridTopMin = height * 0.10;
   const gridTopMax = height * 0.40;
@@ -258,14 +378,13 @@ function detectBoardGrid(imageData, width, height) {
 
   if (bestGridTop === null) bestGridTop = expectedBoardTop;
 
-  // Generate grid lines
   const hGrid = [], vGrid = [];
   for (let i = 0; i <= 15; i++) {
     hGrid.push(Math.max(0, Math.min(height - 1, Math.round(bestGridTop + i * cellH))));
     vGrid.push(Math.max(0, Math.min(width - 1, Math.round(gridLeft + i * cellW))));
   }
 
-  return { hGrid, vGrid, cellW, cellH };
+  return { hGrid, vGrid, cellW, cellH, method: 'prior' };
 }
 
 function fallbackGrid(w, h) {
@@ -278,11 +397,15 @@ function fallbackGrid(w, h) {
     hGrid.push(Math.round(boardTop + i * cellH));
     vGrid.push(Math.round(boardLeft + i * cellW));
   }
-  return { hGrid, vGrid, cellW, cellH };
+  return { hGrid, vGrid, cellW, cellH, method: 'fallback' };
 }
 
 function isTileCell(imageData, width, x1, y1, x2, y2) {
-  // Sample pixels with 8% margin inset
+  // A tile = blue background + a large white letter in the center.
+  // Premium squares (e.g. dark-blue 3L) are also blue but only carry small
+  // white "3L"/"2W" text, so the white-letter check deterministically
+  // distinguishes tiles from premium squares even when their blues overlap.
+  // Thresholds may need tuning per theme — see the debug overlay.
   const marginX = Math.max(2, Math.round((x2 - x1) * 0.08));
   const marginY = Math.max(2, Math.round((y2 - y1) * 0.08));
   const sx1 = x1 + marginX, sy1 = y1 + marginY;
@@ -292,37 +415,45 @@ function isTileCell(imageData, width, x1, y1, x2, y2) {
   const cellW = sx2 - sx1;
   const cellH = sy2 - sy1;
   let blueCount = 0, totalCount = 0;
-  const colHasBlue = new Uint8Array(cellW);
 
   for (let y = sy1; y < sy2; y++) {
     for (let x = sx1; x < sx2; x++) {
       const idx = (y * width + x) * 4;
       const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
       totalCount++;
-      if (isBlueHsv(h, s, v)) {
-        blueCount++;
-        colHasBlue[x - sx1] = 1;
-      }
+      // Broad blue: covers tile blue and premium blue
+      if (h >= 95 && h <= 135 && s >= 60 && v >= 60) blueCount++;
     }
   }
 
   const blueRatio = blueCount / totalCount;
-  if (blueRatio <= 0.25) return false;
+  if (blueRatio <= 0.20) return false;
 
-  // Check that blue spans at least 35% of cell width
-  let denseColCount = 0;
-  for (let c = 0; c < cellW; c++) {
-    // Count pixels in this column that are blue
-    let colBlue = 0;
-    for (let y = sy1; y < sy2; y++) {
-      const idx = (y * width + (sx1 + c)) * 4;
+  // White letter in the center region (middle 50% of the cell). A tile's
+  // letter is large and tall; premium text ("3L") is small and short.
+  const cx1 = Math.round(sx1 + cellW * 0.25), cy1 = Math.round(sy1 + cellH * 0.25);
+  const cx2 = Math.round(sx1 + cellW * 0.75), cy2 = Math.round(sy1 + cellH * 0.75);
+  let centerWhite = 0, centerTotal = 0;
+  let whiteMinY = Infinity, whiteMaxY = -Infinity;
+  for (let y = cy1; y < cy2; y++) {
+    for (let x = cx1; x < cx2; x++) {
+      const idx = (y * width + x) * 4;
       const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
-      if (isBlueHsv(h, s, v)) colBlue++;
+      centerTotal++;
+      if (v >= 200 && s <= 80) {
+        centerWhite++;
+        if (y < whiteMinY) whiteMinY = y;
+        if (y > whiteMaxY) whiteMaxY = y;
+      }
     }
-    if (colBlue > cellH * 0.10) denseColCount++;
   }
+  if (centerTotal === 0) return false;
+  const whiteFrac = centerWhite / centerTotal;
+  if (whiteFrac < 0.04) return false;
+  const whiteSpan = (whiteMaxY - whiteMinY) / (cy2 - cy1);
+  if (whiteSpan < 0.5) return false;
 
-  return (denseColCount / cellW) >= 0.35;
+  return true;
 }
 
 function buildTileMosaic(canvas, grid, tilePositions) {
@@ -539,6 +670,7 @@ async function analyzeHybrid(imageSource) {
   document.getElementById('debugSection').classList.remove('hidden');
 
   let debugLog = `Image: ${w}x${h}\n`;
+  debugLog += `Grid method: ${grid.method || 'unknown'} (premium-anchored / prior fallback / fallback)\n`;
   debugLog += `Grid: top=${grid.hGrid[0]} bottom=${grid.hGrid[15]} left=${grid.vGrid[0]} right=${grid.vGrid[15]}\n`;
   debugLog += `Cell size: ${grid.cellW.toFixed(1)}x${grid.cellH.toFixed(1)} (${(15*grid.cellW/w*100).toFixed(1)}% of width)\n`;
   debugLog += `Tiles detected: ${tilePositions.length}\n`;

@@ -618,11 +618,14 @@ async function findBestMoves() {
     document.getElementById('engineStatus').textContent = 'Error: ' + result.error;
   } else {
     let html = `<h3>Best Moves (${result.moves.length})</h3><table style="width:100%;border-collapse:collapse;font-size:0.85rem;">`;
-    html += '<tr><th style="padding:4px 8px;text-align:left;color:#888;">#</th><th style="padding:4px 8px;text-align:left;color:#888;">Pos</th><th style="padding:4px 8px;text-align:left;color:#888;">Word</th><th style="padding:4px 8px;text-align:left;color:#888;">Score</th><th style="padding:4px 8px;text-align:left;color:#888;">Equity</th></tr>';
+    html += '<tr><th style="padding:4px 8px;text-align:left;color:#888;">Move</th><th style="padding:4px 8px;text-align:left;color:#888;">Score</th><th style="padding:4px 8px;text-align:left;color:#888;">Leave</th><th style="padding:4px 8px;text-align:left;color:#888;">Win%</th><th style="padding:4px 8px;text-align:left;color:#888;">Valuation</th></tr>';
     for (let i = 0; i < result.moves.length; i++) {
       const m = result.moves[i];
       const style = i === 0 ? 'color:#2ecc71;font-weight:700;' : 'color:#e0e0e0;';
-      html += `<tr><td style="padding:4px 8px;${style}">${i+1}</td><td style="padding:4px 8px;${style}">${m.position}</td><td style="padding:4px 8px;${style}"><b>${m.tiles.replace(/\./g,'')}</b></td><td style="padding:4px 8px;${style}">${m.score}</td><td style="padding:4px 8px;${style}">${m.equity.toFixed(1)}</td></tr>`;
+      const tiles = m.tiles.replace(/\./g,'');
+      const moveStr = m.position ? `${m.position} ${tiles}` : tiles;
+      const winPct = (m.win * 100).toFixed(2);
+      html += `<tr><td style="padding:4px 8px;${style}"><b>${moveStr}</b></td><td style="padding:4px 8px;${style}">${m.score}</td><td style="padding:4px 8px;${style}">${m.leave||''}</td><td style="padding:4px 8px;${style}">${winPct}</td><td style="padding:4px 8px;${style}">${m.equity.toFixed(1)}</td></tr>`;
     }
     html += '</table>';
     container.innerHTML = html;

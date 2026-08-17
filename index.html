@@ -531,13 +531,15 @@ function renderMoves(moves) {
   container.classList.remove('hidden');
 
   let html = `<h3>Best Moves (${moves.length})</h3><div class="moves-list"><table>`;
-  html += '<tr><th>#</th><th>Position</th><th>Word</th><th>Score</th><th>Equity</th></tr>';
+  html += '<tr><th>Move</th><th>Score</th><th>Leave</th><th>Win%</th><th>Valuation</th></tr>';
 
   for (let i = 0; i < moves.length; i++) {
     const m = moves[i];
     const tiles = m.tiles.replace(/\./g, '');
-    const equity = m.equity.toFixed(1);
-    html += `<tr><td>${i + 1}</td><td>${m.position}</td><td><b>${tiles}</b></td><td>${m.score}</td><td>${equity}</td></tr>`;
+    const moveStr = m.position ? `${m.position} ${tiles}` : tiles;
+    const winPct = (m.win * 100).toFixed(2);
+    const valuation = m.equity.toFixed(1);
+    html += `<tr><td><b>${moveStr}</b></td><td>${m.score}</td><td>${m.leave || ''}</td><td>${winPct}</td><td>${valuation}</td></tr>`;
   }
 
   html += '</table></div>';

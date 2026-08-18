@@ -227,6 +227,45 @@ class BrowserPipelineTest(unittest.TestCase):
 
                 page.close()
 
+    def test_compact_header_and_tile_glyph_regressions(self):
+        """Check the exact pixels from the reported compact-screen failure.
+
+        This fixture is the analyzer debug canvas, so it contains overlays on
+        tiles that the old detector found. The score, rack, and four missed L
+        tiles are unchanged and can be tested directly.
+        """
+        page, page_errors, _ = self.open_page()
+        result = page.evaluate(
+            """async fixtureUrl => {
+              const response = await fetch(fixtureUrl);
+              const bitmap = await createImageBitmap(await response.blob());
+              const canvas = document.createElement('canvas');
+              canvas.width = bitmap.width;
+              canvas.height = bitmap.height;
+              const context = canvas.getContext('2d');
+              context.drawImage(bitmap, 0, 0);
+              const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+              const xs = [19,69,120,172,223,275,325,378,428,480,531,583,633,685,736,788];
+              const ys = [383,432,484,534,586,637,689,739,792,842,894,945,997,1047,1099,1150];
+              const lCells = [[2,7],[5,6],[8,3],[13,7]].map(([row, col]) => ({
+                tile: isTileCell(pixels.data, canvas.width, xs[col], ys[row], xs[col + 1], ys[row + 1]),
+                letter: readTileLetter(pixels.data, canvas.width, xs[col], ys[row], xs[col + 1], ys[row + 1])
+              }));
+              return {
+                scores: readHeaderScores(pixels.data, canvas.width, canvas.height, ys[0]),
+                lCells,
+                rackO: readTileLetter(pixels.data, canvas.width, 686, 1277, 790, 1383)
+              };
+            }""",
+            f"{self.base_url}/compact_header_ocr_debug.png",
+        )
+
+        self.assertEqual(result["scores"], {"player": "150", "opponent": "139"})
+        self.assertEqual(result["lCells"], [{"tile": True, "letter": "L"}] * 4)
+        self.assertEqual(result["rackO"], "O")
+        self.assertEqual(page_errors, [])
+        page.close()
+
     def test_board_change_clears_simulation_state(self):
         page, page_errors, _ = self.open_page()
         page.locator("#imageUrlInput").fill(f"{self.base_url}/test_board.png")

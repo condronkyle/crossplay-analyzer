@@ -604,6 +604,14 @@ function readTileLetter(imageData, width, x1, y1, x2, y2) {
   if (!g) return null;
   const norm = normalizeGlyph(g.mask, g.w, g.h);
   const letter = matchLetter(norm);
+  // O and D are the closest template pair. Use their stable left-edge
+  // topology when Chamfer matching selects either one: D has a full-height
+  // left stem, while O curves away from its left edge.
+  if (letter === 'D' || letter === 'O') {
+    let occupied = 0;
+    for (let y = 0; y < g.h; y++) occupied += g.mask[y * g.w];
+    return occupied / g.h >= 0.75 ? 'D' : 'O';
+  }
   if (letter === 'I' && g.w / g.h > 0.35) return 'J';
   return letter;
 }
@@ -716,7 +724,11 @@ function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
   // let the DP over-segment a wide 4/0 into two lower-scoring fragments.
   const whole = cleanHeaderGlyph(raw, runW, y1 - y0 + 1);
   const wholeHit = whole ? matchGlyphDetailed(whole.mask, whole.w, whole.h) : null;
-  if (wholeHit && runW <= 35) return { distance: wholeHit.distance, text: wholeHit.ch };
+  // A narrow run can still contain touching digits (for example "15").
+  // Accept it as one digit only when the whole-glyph match is strong.
+  if (wholeHit && runW <= 35 && wholeHit.distance < 0.35) {
+    return { distance: wholeHit.distance, text: wholeHit.ch };
+  }
 
   // Dynamic programming handles genuinely touching glyphs. Candidate widths
   // are kept deliberately small: a normal header digit is 6–35 source pixels.
@@ -747,8 +759,12 @@ function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
 function findHeaderScoreBand(imageData, width, height, gridTop) {
   const top = Math.max(0, Math.floor(gridTop));
   if (top < 80) return null;
+  const compactHeader = top < width * 0.55;
   const left0 = Math.floor(width * 0.10), left1 = Math.floor(width * 0.35);
-  const right0 = Math.floor(width * 0.65), right1 = Math.floor(width * 0.90);
+  // In the compact layout, stop before the opponent avatar. Its dark outline
+  // can bridge the score and name lines into one false band.
+  const right0 = Math.floor(width * 0.65);
+  const right1 = Math.floor(width * (compactHeader ? 0.87 : 0.90));
   const rowProj = new Uint16Array(top);
   let maxRow = 0;
   for (let y = 0; y < top; y++) {
@@ -767,7 +783,9 @@ function findHeaderScoreBand(imageData, width, height, gridTop) {
   // A 15% density threshold keeps anti-aliased score strokes together
   // without fragmenting the 9/3 glyphs on the regular screen.
   const threshold = Math.max(12, maxRow * 0.15);
-  const minY = Math.floor(top * 0.25);
+  // Compact screenshots place scores above one quarter of the board-top
+  // coordinate. Other layouts keep the narrower established search region.
+  const minY = Math.floor(top * (compactHeader ? 0.15 : 0.25));
   const bands = [];
   let start = -1;
   for (let y = minY; y < top; y++) {
@@ -820,21 +838,38 @@ function decodeHeaderSide(dark, width, x0, x1, y0, y1) {
   }
   if (start >= 0) runs.push([start, colProj.length - 1]);
 
-  // The first compact cluster is the score. Controls, avatars, and the
-  // opponent name are separated by a much larger horizontal gap.
-  const cluster = [];
-  for (const run of runs) {
-    if (cluster.length && run[0] - cluster[cluster.length - 1][1] - 1 > 15) break;
-    cluster.push(run);
-  }
-
-  let text = '';
-  for (const [a, b] of cluster) {
+  // A difficulty label can precede the opponent score. Evaluate every
+  // compact digit sequence, then use the closest valid 1-3 digit match.
+  const candidates = [];
+  let current = null;
+  let previous = null;
+  const finish = () => {
+    if (current && (current.text === '0' || !current.text.startsWith('0'))) {
+      candidates.push(current);
+    }
+    current = null;
+  };
+  for (const [a, b] of runs) {
+    const gap = previous ? a - previous[1] - 1 : 0;
+    if (gap > 15) finish();
     const decoded = decodeHeaderRun(dark, width, x0 + a, x0 + b, y0, y1);
-    // Real score glyphs match closely. Trailing icons and rules do not.
-    if (decoded && decoded.distance / Math.max(1, decoded.text.length) < 0.35) text += decoded.text;
+    const digitCount = decoded ? decoded.text.length : 0;
+    const averageDistance = decoded ? decoded.distance / Math.max(1, digitCount) : Infinity;
+    if (!decoded || averageDistance >= 0.35 || digitCount > 3) {
+      finish();
+    } else {
+      if (current && current.text.length + digitCount > 3) finish();
+      if (!current) current = { text: '', distance: 0, digits: 0 };
+      current.text += decoded.text;
+      current.distance += decoded.distance;
+      current.digits += digitCount;
+    }
+    previous = [a, b];
   }
-  return text || null;
+  finish();
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => a.distance / a.digits - b.distance / b.digits);
+  return candidates[0].text;
 }
 
 function readHeaderScores(imageData, width, height, gridTop) {
@@ -1025,6 +1060,10 @@ function isTileCell(imageData, width, x1, y1, x2, y2) {
 
   const blueRatio = blueCount / totalCount;
   if (blueRatio <= 0.20) return false;
+  // Real tiles have a solid blue field. Current fixtures have at least 0.683
+  // blue coverage, while empty and premium cells stay below 0.184. This also
+  // accepts L, whose stem and baseline fall outside the center-only check.
+  if (blueRatio >= 0.50) return true;
 
   // White letter in the center region (middle 50% of the cell). A tile's
   // letter is large and tall; premium text ("3L") is small and short.

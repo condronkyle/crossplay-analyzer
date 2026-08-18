@@ -224,6 +224,8 @@ def is_tile_cell(pixels, width, x1, y1, x2, y2):
     blue_ratio = blue_count / total_count if total_count > 0 else 0
     if blue_ratio <= 0.20:
         return False
+    if blue_ratio >= 0.50:
+        return True
 
     # White letter in the center region (middle 50% of the cell). A tile's
     # letter is large and tall; premium text ('3L') is small and short.

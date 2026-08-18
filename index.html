@@ -449,6 +449,49 @@ const HEADER_ALTERNATE_DT = {};
   }
 })();
 
+// The bundled digit masks were captured from the larger Crossplay header.
+// On narrow phone screenshots the score font is only about 15 px high, so
+// binarization loses enough detail for 150/139 to collapse into one glyph.
+// Add small local canvas renders as a second, browser-native font sample. The
+// page is offline; this only uses fonts already available on the device.
+let HEADER_RENDERED_TEMPLATES = null;
+function getRenderedHeaderTemplates() {
+  if (HEADER_RENDERED_TEMPLATES || typeof document === 'undefined') return HEADER_RENDERED_TEMPLATES;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const templates = [];
+  for (const family of ['Arial', 'Helvetica', 'sans-serif']) {
+    for (let size = 12; size <= 22; size++) {
+      for (const ch of DIGIT_CHARS) {
+        canvas.width = 64; canvas.height = 64;
+        ctx.clearRect(0, 0, 64, 64);
+        ctx.font = `700 ${size}px ${family}`;
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#000';
+        ctx.fillText(ch, 8, 4);
+        const pixels = ctx.getImageData(0, 0, 64, 64).data;
+        let minX = 64, maxX = -1, minY = 64, maxY = -1;
+        for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+          if (pixels[(y * 64 + x) * 4 + 3] > 40) {
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+          }
+        }
+        if (maxX < minX || maxY < minY) continue;
+        const mw = maxX - minX + 1, mh = maxY - minY + 1;
+        const mask = new Uint8Array(mw * mh);
+        for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+          mask[y * mw + x] = pixels[((minY + y) * 64 + minX + x) * 4 + 3] > 100 ? 1 : 0;
+        }
+        templates.push({ ch, mask: normalizeGlyph(mask, mw, mh), dt: null });
+      }
+    }
+  }
+  for (const template of templates) template.dt = edt(template.mask);
+  HEADER_RENDERED_TEMPLATES = templates;
+  return templates;
+}
+
 // Euclidean distance transform (Felzenszwalb-Huttenlocher), flat output
 function edt(binary) {
   const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
@@ -506,7 +549,7 @@ function extractGlyphMask(imageData, width, x1, y1, x2, y2) {
   }
   // connected components (4-connectivity), keep the largest (the letter)
   const seen = new Uint8Array(gw * gh);
-  let best = null, bestSize = 0;
+  let best = null, bestSize = 0, bestCenterDistance = Infinity;
   for (let i = 0; i < gw * gh; i++) {
     if (!white[i] || seen[i]) continue;
     const q = [i]; seen[i] = 1;
@@ -524,7 +567,13 @@ function extractGlyphMask(imageData, width, x1, y1, x2, y2) {
         if (white[np] && !seen[np]) { seen[np] = 1; q.push(np); }
       }
     }
-    if (size > bestSize) { bestSize = size; best = { minX, maxX, minY, maxY }; }
+    const componentCenterDistance = Math.abs((minX + maxX) / 2 - gw / 2)
+      + Math.abs((minY + maxY) / 2 - gh / 2);
+    if (size > bestSize || (size === bestSize && componentCenterDistance < bestCenterDistance)) {
+      bestSize = size;
+      bestCenterDistance = componentCenterDistance;
+      best = { minX, maxX, minY, maxY };
+    }
   }
   if (!best || bestSize < 20) return null;
   const mw = best.maxX - best.minX + 1, mh = best.maxY - best.minY + 1;
@@ -584,18 +633,82 @@ function chamferDistance(a, dtA, b, dtB) {
   return (ca / na + cb / nb) / 2;
 }
 
+// Chamfer distance is deliberately tolerant of antialiasing, but it can be
+// ambiguous for glyphs with the same overall outline (most notably O/D and
+// 0/6/8). Add a low-frequency silhouette comparison so flat and curved edges
+// retain their shape after normalization. This is also less sensitive to a
+// one-pixel hole in an O than comparing individual pixels directly.
+function glyphProfileDistance(a, b) {
+  const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
+  let rowDistance = 0, colDistance = 0;
+  for (let y = 0; y < H; y++) {
+    let aCount = 0, bCount = 0;
+    for (let x = 0; x < W; x++) {
+      aCount += a[y * W + x];
+      bCount += b[y * W + x];
+    }
+    rowDistance += Math.abs(aCount - bCount) / W;
+  }
+  for (let x = 0; x < W; x++) {
+    let aCount = 0, bCount = 0;
+    for (let y = 0; y < H; y++) {
+      aCount += a[y * W + x];
+      bCount += b[y * W + x];
+    }
+    colDistance += Math.abs(aCount - bCount) / H;
+  }
+  return (rowDistance / H + colDistance / W) / 2;
+}
+
+// O and D can have nearly identical pixel distances after a small glyph is
+// enlarged. Compare their left/right edge curvature explicitly: O's edges
+// bow outward near the middle while D's left edge stays straight.
+function glyphEdgeProfileDistance(a, b) {
+  const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
+  let distance = 0, rows = 0;
+  for (let y = 0; y < H; y++) {
+    let aMin = W, aMax = -1, bMin = W, bMax = -1;
+    for (let x = 0; x < W; x++) {
+      if (a[y * W + x]) { aMin = Math.min(aMin, x); aMax = Math.max(aMax, x); }
+      if (b[y * W + x]) { bMin = Math.min(bMin, x); bMax = Math.max(bMax, x); }
+    }
+    if (aMax < 0 || bMax < 0) continue;
+    distance += (Math.abs(aMin - bMin) + Math.abs(aMax - bMax)) / (2 * W);
+    rows++;
+  }
+  return rows ? distance / rows : Infinity;
+}
+
+function glyphMatchDistance(norm, dtA, template, templateDt) {
+  return chamferDistance(norm, dtA, template, templateDt)
+    + 0.75 * glyphProfileDistance(norm, template);
+}
+
 // Match a normalized glyph against the A-Z letter templates only (the
 // GLYPH_TEMPLATES set also carries 0-9 for header score OCR, but tile
 // letters must only ever match A-Z).
 const LETTER_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 function matchLetter(norm) {
   const dtA = edt(norm);
-  let best = null, bestD = Infinity;
-  for (const ch of LETTER_CHARS) {
-    const d = chamferDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
-    if (d < bestD) { bestD = d; best = ch; }
+  const scored = LETTER_CHARS.split('').map(ch => ({
+    ch,
+    distance: glyphMatchDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch])
+  }));
+  scored.sort((a, b) => a.distance - b.distance);
+
+  // Only invoke the specialized O/D edge cue when the ordinary matcher is
+  // actually ambiguous. Otherwise a curved O should not be pushed toward a
+  // distant Q (which can happen on very small, antialiased tiles).
+  let best = scored[0];
+  const od = scored.filter(hit => hit.ch === 'O' || hit.ch === 'D');
+  const dHit = od.find(hit => hit.ch === 'D');
+  const oHit = od.find(hit => hit.ch === 'O');
+  if (dHit && oHit && best.ch === 'D' && oHit.distance - dHit.distance < 0.10) {
+    const dScore = dHit.distance + 8 * glyphEdgeProfileDistance(norm, GLYPH_TEMPLATE_MASKS.D);
+    const oScore = oHit.distance + 8 * glyphEdgeProfileDistance(norm, GLYPH_TEMPLATE_MASKS.O);
+    best = dScore <= oScore ? dHit : oHit;
   }
-  return best;
+  return best.ch;
 }
 
 // Read a tile's letter from the raw image data; returns a letter or null
@@ -615,7 +728,7 @@ function matchGlyph(mask, w, h) {
   const dtA = edt(norm);
   let best = null, bestD = Infinity;
   for (const ch of DIGIT_CHARS) {
-    const d = chamferDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
+    const d = glyphMatchDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
     if (d < bestD) { bestD = d; best = ch; }
   }
   return best;
@@ -670,12 +783,16 @@ function matchGlyphDetailed(mask, w, h) {
   const dtA = edt(norm);
   let best = null, bestD = Infinity;
   for (const ch of DIGIT_CHARS) {
-    const d = chamferDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
+    const d = glyphMatchDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
     if (d < bestD) { bestD = d; best = ch; }
     if (HEADER_ALTERNATE_MASKS[ch]) {
-      const alternateD = chamferDistance(norm, dtA, HEADER_ALTERNATE_MASKS[ch], HEADER_ALTERNATE_DT[ch]);
+      const alternateD = glyphMatchDistance(norm, dtA, HEADER_ALTERNATE_MASKS[ch], HEADER_ALTERNATE_DT[ch]);
       if (alternateD < bestD) { bestD = alternateD; best = ch; }
     }
+  }
+  for (const template of getRenderedHeaderTemplates() || []) {
+    const d = glyphMatchDistance(norm, dtA, template.mask, template.dt);
+    if (d < bestD) { bestD = d; best = template.ch; }
   }
   return { ch: best, distance: bestD };
 }
@@ -716,7 +833,6 @@ function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
   // let the DP over-segment a wide 4/0 into two lower-scoring fragments.
   const whole = cleanHeaderGlyph(raw, runW, y1 - y0 + 1);
   const wholeHit = whole ? matchGlyphDetailed(whole.mask, whole.w, whole.h) : null;
-  if (wholeHit && runW <= 35) return { distance: wholeHit.distance, text: wholeHit.ch };
 
   // Dynamic programming handles genuinely touching glyphs. Candidate widths
   // are kept deliberately small: a normal header digit is 6–35 source pixels.
@@ -764,10 +880,18 @@ function findHeaderScoreBand(imageData, width, height, gridTop) {
     rowProj[y] = count;
     if (count > maxRow) maxRow = count;
   }
-  // A 15% density threshold keeps anti-aliased score strokes together
-  // without fragmenting the 9/3 glyphs on the regular screen.
-  const threshold = Math.max(12, maxRow * 0.15);
-  const minY = Math.floor(top * 0.25);
+  // Use a relative threshold so one- and two-digit scores are not lost on
+  // narrow screenshots. Cap the absolute threshold because a large name or
+  // status label can otherwise drown out the much smaller score glyphs.
+  const compactHeader = top < 400;
+  const threshold = compactHeader
+    ? Math.max(5, Math.min(80, maxRow * 0.22))
+    : Math.max(12, maxRow * 0.12);
+  const minY = Math.floor(top * (compactHeader ? 0.15 : 0.25));
+  // Very small phone screenshots have score/name glyphs only ~13 px tall.
+  // Keep the larger 15 px guard for normal screenshots but allow the compact
+  // layout to form two separate bands instead of merging score and name.
+  const minimumBandHeight = Math.max(8, Math.min(15, Math.round(top * 0.04)));
   const bands = [];
   let start = -1;
   for (let y = minY; y < top; y++) {
@@ -788,7 +912,8 @@ function findHeaderScoreBand(imageData, width, height, gridTop) {
     const gap = bands[i + 1][0] - bands[i][1] - 1;
     const upperH = bands[i][1] - bands[i][0] + 1;
     const lowerH = bands[i + 1][1] - bands[i + 1][0] + 1;
-    if (gap >= 3 && gap <= 45 && upperH >= 15 && upperH <= 50 && lowerH >= 15 && lowerH <= 50) {
+    if (gap >= 3 && gap <= 45 && upperH >= minimumBandHeight && upperH <= 50
+      && lowerH >= minimumBandHeight && lowerH <= 50) {
       return [Math.max(0, bands[i][0] - 2), Math.min(top - 1, bands[i][1] + 2)];
     }
   }
@@ -828,13 +953,53 @@ function decodeHeaderSide(dark, width, x0, x1, y0, y1) {
     cluster.push(run);
   }
 
-  let text = '';
-  for (const [a, b] of cluster) {
-    const decoded = decodeHeaderRun(dark, width, x0 + a, x0 + b, y0, y1);
-    // Real score glyphs match closely. Trailing icons and rules do not.
-    if (decoded && decoded.distance / Math.max(1, decoded.text.length) < 0.35) text += decoded.text;
+  // Preserve the original per-run behavior for the larger header fonts. The
+  // compact grouping below is specifically for the small phone score band.
+  if (y1 - y0 + 1 > 20) {
+    let text = '';
+    for (const [a, b] of cluster) {
+      const decoded = decodeHeaderRun(dark, width, x0 + a, x0 + b, y0, y1);
+      if (decoded && decoded.distance / Math.max(1, decoded.text.length) < 0.55) {
+        text += decoded.text;
+      }
+    }
+    return text || null;
   }
-  return text || null;
+
+  // Keep nearby digit runs together, but split labels from scores. On the
+  // compact phone layout "Easy 139" is one visual cluster with a larger gap
+  // between the two words than between digits.
+  const groups = [];
+  for (const run of cluster) {
+    if (!groups.length || run[0] - groups[groups.length - 1][1] - 1 > 6) {
+      groups.push([run[0], run[1]]);
+    } else {
+      groups[groups.length - 1][1] = run[1];
+    }
+  }
+
+  const decodedGroups = [];
+  for (const [a, b] of groups) {
+    const decoded = decodeHeaderRun(dark, width, x0 + a, x0 + b, y0, y1);
+    // Compression and a different device font can move a good digit farther
+    // from the bundled template. Keep the compact-cluster and band geometry
+    // guards above, but do not discard an otherwise plausible score at the
+    // old, overly strict 0.35 cutoff.
+    if (decoded && decoded.distance / Math.max(1, decoded.text.length) < 0.55) {
+      decodedGroups.push(decoded);
+    }
+  }
+
+  // Prefer the best 1–3 digit group and reject four-plus-digit hallucinations
+  // from a difficulty label or nearby control.
+  const scoreGroups = decodedGroups.filter(run => /^\d{1,3}$/.test(run.text));
+  const multiDigit = scoreGroups.filter(run => run.text.length >= 2);
+  if (multiDigit.length) {
+    multiDigit.sort((a, b) =>
+      a.distance / a.text.length - b.distance / b.text.length);
+    return multiDigit[0].text;
+  }
+  return decodedGroups.map(run => run.text).join('') || null;
 }
 
 function readHeaderScores(imageData, width, height, gridTop) {
@@ -852,10 +1017,19 @@ function readHeaderScores(imageData, width, height, gridTop) {
   const playerX1 = Math.floor(width * (postGame ? 0.38 : 0.35));
   const opponentX0 = Math.floor(width * (postGame ? 0.68 : 0.65));
   const opponentX1 = Math.floor(width * (postGame ? 0.82 : 0.90));
-  return {
-    player: decodeHeaderSide(dark, width, playerX0, playerX1, band[0], band[1]),
-    opponent: decodeHeaderSide(dark, width, opponentX0, opponentX1, band[0], band[1])
-  };
+  const player = decodeHeaderSide(dark, width, playerX0, playerX1, band[0], band[1]);
+  const opponent = decodeHeaderSide(dark, width, opponentX0, opponentX1, band[0], band[1]);
+
+  // The app has used two header layouts: the in-game score starts near 14%
+  // of the image and the post-game score starts near 20%. If a new device
+  // layout puts the score just outside that primary range, retry against a
+  // wider side region. This is only a null-result fallback, so controls near
+  // the edge cannot replace a successfully decoded score.
+  const playerFallback = player || decodeHeaderSide(
+    dark, width, Math.floor(width * 0.08), Math.floor(width * 0.45), band[0], band[1]);
+  const opponentFallback = opponent || decodeHeaderSide(
+    dark, width, Math.floor(width * 0.58), Math.floor(width * 0.94), band[0], band[1]);
+  return { player: playerFallback, opponent: opponentFallback };
 }
 
 // Detect whether each side's header score is "0". Kept as a compatibility
@@ -1028,8 +1202,11 @@ function isTileCell(imageData, width, x1, y1, x2, y2) {
 
   // White letter in the center region (middle 50% of the cell). A tile's
   // letter is large and tall; premium text ("3L") is small and short.
-  const cx1 = Math.round(sx1 + cellW * 0.25), cy1 = Math.round(sy1 + cellH * 0.25);
-  const cx2 = Math.round(sx1 + cellW * 0.75), cy2 = Math.round(sy1 + cellH * 0.75);
+  // Use most of the cell horizontally. A narrow center window misses the
+  // vertical stroke of an L because that stroke is intentionally left of the
+  // glyph center. Keep a small inset to avoid the tile border/superscript.
+  const cx1 = Math.round(sx1 + cellW * 0.12), cy1 = Math.round(sy1 + cellH * 0.12);
+  const cx2 = Math.round(sx1 + cellW * 0.88), cy2 = Math.round(sy1 + cellH * 0.88);
   let centerWhite = 0, centerTotal = 0;
   let whiteMinY = Infinity, whiteMaxY = -Infinity;
   for (let y = cy1; y < cy2; y++) {
@@ -1037,7 +1214,7 @@ function isTileCell(imageData, width, x1, y1, x2, y2) {
       const idx = (y * width + x) * 4;
       const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
       centerTotal++;
-      if (v >= 200 && s <= 80) {
+      if (v >= 190 && s <= 100) {
         centerWhite++;
         if (y < whiteMinY) whiteMinY = y;
         if (y > whiteMaxY) whiteMaxY = y;
@@ -1046,9 +1223,16 @@ function isTileCell(imageData, width, x1, y1, x2, y2) {
   }
   if (centerTotal === 0) return false;
   const whiteFrac = centerWhite / centerTotal;
-  if (whiteFrac < 0.04) return false;
-  const whiteSpan = (whiteMaxY - whiteMinY) / (cy2 - cy1);
-  if (whiteSpan < 0.5) return false;
+  const whiteSpan = whiteMaxY >= whiteMinY
+    ? (whiteMaxY - whiteMinY + 1) / (cy2 - cy1)
+    : 0;
+
+  // L (and, at some scales, I/T) has very little ink in the middle of the
+  // cell even though its glyph is tall. The old 4% area gate rejected those
+  // real tiles. Keep the tall-glyph test as the premium-square guard, but
+  // lower the area gate enough for narrow glyphs and use a slightly more
+  // forgiving white threshold for compressed/WebP screenshots.
+  if (whiteFrac < 0.015 || whiteSpan < 0.45) return false;
 
   return true;
 }

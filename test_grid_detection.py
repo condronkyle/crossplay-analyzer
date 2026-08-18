@@ -227,8 +227,9 @@ def is_tile_cell(pixels, width, x1, y1, x2, y2):
 
     # White letter in the center region (middle 50% of the cell). A tile's
     # letter is large and tall; premium text ('3L') is small and short.
-    cx1, cy1 = round(sx1 + cell_w * 0.25), round(sy1 + cell_h * 0.25)
-    cx2, cy2 = round(sx1 + cell_w * 0.75), round(sy1 + cell_h * 0.75)
+    # Keep most of the cell horizontally so narrow L glyphs are not missed.
+    cx1, cy1 = round(sx1 + cell_w * 0.12), round(sy1 + cell_h * 0.12)
+    cx2, cy2 = round(sx1 + cell_w * 0.88), round(sy1 + cell_h * 0.88)
     center_white = 0
     center_total = 0
     white_min_y = float('inf')
@@ -238,17 +239,16 @@ def is_tile_cell(pixels, width, x1, y1, x2, y2):
             r, g, b = pixels[y, x, 0], pixels[y, x, 1], pixels[y, x, 2]
             h, s, v = rgb_to_hsv(r, g, b)
             center_total += 1
-            if v >= 200 and s <= 80:
+            if v >= 190 and s <= 100:
                 center_white += 1
                 white_min_y = min(white_min_y, y)
                 white_max_y = max(white_max_y, y)
     if center_total == 0:
         return False
     white_frac = center_white / center_total
-    if white_frac < 0.04:
-        return False
-    white_span = (white_max_y - white_min_y) / (cy2 - cy1)
-    if white_span < 0.5:
+    white_span = ((white_max_y - white_min_y + 1) / (cy2 - cy1)
+                  if white_max_y >= white_min_y else 0)
+    if white_frac < 0.015 or white_span < 0.45:
         return False
     return True
 

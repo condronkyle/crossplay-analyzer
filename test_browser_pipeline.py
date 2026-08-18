@@ -181,15 +181,165 @@ class BrowserPipelineTest(unittest.TestCase):
                     self.assertTrue(page.locator("#kibitzBtn").evaluate("el => el.classList.contains('hidden')"))
 
                 if fixture == "test_board.png":
+                    page.evaluate(
+                        "window.__quackleStatuses = []; "
+                        "new MutationObserver(() => window.__quackleStatuses.push("
+                        "document.getElementById('engineStatus').textContent))"
+                        ".observe(document.getElementById('engineStatus'), "
+                        "{childList: true, subtree: true})"
+                    )
                     page.locator("#kibitzBtn").click()
                     page.wait_for_function(
-                        "document.getElementById('engineStatus').textContent.startsWith('Found ')",
+                        "document.getElementById('engineStatus').textContent.includes('running 50 rounds') || "
+                        "document.getElementById('engineStatus').textContent.startsWith('Error:')",
                         timeout=120_000,
                     )
+                    running_status = page.locator("#engineStatus").text_content()
+                    self.assertIn("running 50 rounds", running_status)
+                    self.assertTrue(page.locator("#kibitzBtn").is_disabled())
+                    page.evaluate(
+                        "window.__quackleHeartbeat = false; "
+                        "setTimeout(() => { window.__quackleHeartbeat = true; }, 100)"
+                    )
+                    page.wait_for_function("window.__quackleHeartbeat", timeout=5_000)
+                    page.wait_for_function(
+                        "document.getElementById('engineStatus').textContent.startsWith('Found ') || "
+                        "document.getElementById('engineStatus').textContent.startsWith('Error:')",
+                        timeout=120_000,
+                    )
+                    engine_status = page.locator("#engineStatus").text_content()
+                    self.assertTrue(engine_status.startswith("Found "), engine_status)
+                    self.assertTrue(any(
+                        "running 50 rounds" in status
+                        for status in page.evaluate("window.__quackleStatuses")
+                    ))
                     self.assertEqual(page.locator("#movesContainer tbody tr").count() - 1, 15)
+                    win_cells = page.locator("#movesContainer tbody tr:not(:first-child) td:nth-child(4)")
+                    self.assertEqual(win_cells.count(), 15)
+                    for index in range(win_cells.count()):
+                        cell = win_cells.nth(index)
+                        self.assertRegex(cell.text_content(), r"^(100|[0-9]{1,2})\.\d%$")
+                        self.assertEqual(cell.get_attribute("data-samples"), "50")
+                    self.assertIn("Simulated 50 rounds per move", engine_status)
+                    self.assertIn("750 playouts total", engine_status)
+                    self.assertFalse(page.locator("#kibitzBtn").is_disabled())
                     self.assertFalse(any("bogowin heuristic" in message for message in console_messages))
 
                 page.close()
+
+    def test_board_change_clears_simulation_state(self):
+        page, page_errors, _ = self.open_page()
+        page.locator("#imageUrlInput").fill(f"{self.base_url}/test_board.png")
+        self.wait_for_analysis(page)
+        page.locator("#kibitzBtn").click()
+        page.wait_for_function(
+            "document.getElementById('engineStatus').textContent.includes('running 50 rounds') || "
+            "document.getElementById('engineStatus').textContent.startsWith('Error:')",
+            timeout=120_000,
+        )
+        self.assertIn("running 50 rounds", page.locator("#engineStatus").text_content())
+
+        page.locator("#imageUrlInput").fill(f"{self.base_url}/IMG_3046.png")
+        self.wait_for_analysis(page)
+        expected_status = "Board ready. Run Quackle to estimate win percentages."
+        self.assertEqual(page.locator("#engineStatus").text_content(), expected_status)
+        self.assertTrue(page.locator("#movesContainer").evaluate("el => el.classList.contains('hidden')"))
+        self.assertEqual(page.locator("#movesContainer").text_content(), "")
+        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+        page.wait_for_timeout(2_500)
+        self.assertEqual(page.locator("#engineStatus").text_content(), expected_status)
+        self.assertEqual(page.locator("#movesContainer").text_content(), "")
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_manual_board_simulation(self):
+        page, page_errors, console_messages = self.open_page()
+        page.goto(f"{self.base_url}/manual.html", wait_until="domcontentloaded")
+        page.evaluate("loadSample()")
+        page.locator("#kibitzBtn").click()
+        page.wait_for_function(
+            "document.getElementById('engineStatus').textContent.includes('running 50 rounds') || "
+            "document.getElementById('engineStatus').textContent.startsWith('Error:')",
+            timeout=120_000,
+        )
+        self.assertIn("running 50 rounds", page.locator("#engineStatus").text_content())
+        self.assertTrue(page.locator("#kibitzBtn").is_disabled())
+        page.evaluate(
+            "window.__manualHeartbeat = false; "
+            "setTimeout(() => { window.__manualHeartbeat = true; }, 100)"
+        )
+        page.wait_for_function("window.__manualHeartbeat", timeout=5_000)
+        page.wait_for_function(
+            "document.getElementById('engineStatus').textContent.startsWith('Found ') || "
+            "document.getElementById('engineStatus').textContent.startsWith('Error:')",
+            timeout=120_000,
+        )
+        engine_status = page.locator("#engineStatus").text_content()
+        self.assertTrue(engine_status.startswith("Found "), engine_status)
+        self.assertIn("Simulated 50 rounds per move", engine_status)
+        self.assertIn("750 playouts total", engine_status)
+        win_cells = page.locator("#movesContainer td[data-samples]")
+        self.assertEqual(win_cells.count(), 15)
+        for index in range(win_cells.count()):
+            cell = win_cells.nth(index)
+            self.assertRegex(cell.text_content(), r"^(100|[0-9]{1,2})\.\d%$")
+            self.assertEqual(cell.get_attribute("data-samples"), "50")
+        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+        self.assertFalse(any("bogowin heuristic" in message for message in console_messages))
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_engine_load_retry(self):
+        page, page_errors, _ = self.open_page()
+        attempts = {"count": 0}
+
+        def fail_first_worker_request(route):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                route.abort()
+            else:
+                route.continue_()
+
+        page.route("**/quackle-worker.js", fail_first_worker_request)
+        page.locator("#imageUrlInput").fill(f"{self.base_url}/test_board.png")
+        self.wait_for_analysis(page)
+        page.locator("#kibitzBtn").click()
+        page.wait_for_function(
+            "document.getElementById('engineStatus').textContent.includes('Engine load failed')",
+            timeout=10_000,
+        )
+        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+        self.assertTrue(page.evaluate("quackleWorker === null"))
+
+        page.locator("#kibitzBtn").click()
+        page.wait_for_function(
+            "document.getElementById('engineStatus').textContent.startsWith('Found ') || "
+            "document.getElementById('engineStatus').textContent.startsWith('Error:')",
+            timeout=120_000,
+        )
+        engine_status = page.locator("#engineStatus").text_content()
+        self.assertTrue(engine_status.startswith("Found "), engine_status)
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_engine_rejects_impossible_tile_distribution(self):
+        page, page_errors, _ = self.open_page()
+        result = page.evaluate(
+            """async () => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              return callQuackleWorker('simulateKibitz', {
+                gridJson: JSON.stringify(Array(15).fill('AAAAAAAAAAAAAAA')),
+                rack: 'A', playerScore: 0, opponentScore: 0,
+                numMoves: 15, iterations: 1
+              });
+            }"""
+        )
+        self.assertFalse(result["simulated"])
+        self.assertEqual(result["iterationsCompleted"], 0)
+        self.assertIn("more tiles than the Crossplay distribution", result["error"])
+        self.assertEqual(page_errors, [])
+        page.close()
 
     def test_drop_input(self):
         page, page_errors, _ = self.open_page()

@@ -56,6 +56,7 @@
   .moves-list td { color: #e0e0e0; }
   .moves-list tr:first-child td { color: #2ecc71; font-weight: 700; }
   #engineStatus { font-size: 0.8rem; color: #888; margin-top: 4px; }
+  .hint { color: #777; font-size: 0.75rem; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -1429,6 +1430,13 @@ async function analyze() {
   const imageUrl = document.getElementById('imageUrlInput').value.trim();
   if (!imageUrl && !base64Image) { setStatus('Provide an image URL or drop an image.', 'error'); return; }
 
+  cancelQuackleRun('Analyzing a new board...');
+  const movesContainer = document.getElementById('movesContainer');
+  movesContainer.classList.add('hidden');
+  movesContainer.innerHTML = '';
+  document.getElementById('kibitzBtn').classList.add('hidden');
+  lastParsed = null;
+
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
 
@@ -1462,6 +1470,11 @@ async function analyze() {
 
 // ── Parse & render ────────────────────────────────────────────────────────
 function renderResult(parsed) {
+  cancelQuackleRun('Board ready. Run Quackle to estimate win percentages.');
+  const movesContainer = document.getElementById('movesContainer');
+  movesContainer.classList.add('hidden');
+  movesContainer.innerHTML = '';
+
   // Build tile list from grid
   const grid = parsed.grid || [];
   const tiles = [];
@@ -1556,42 +1569,98 @@ function renderResult(parsed) {
 }
 
 // ── Quackle WASM Engine ─────────────────────────────────────────────────
-let quackleModule = null;
+const QUACKLE_MOVE_COUNT = 15;
+const QUACKLE_SIMULATION_PLIES = 2;
+const QUACKLE_SIMULATION_ITERATIONS = 50;
+let quackleWorker = null;
 let quackleReady = false;
+let quackleBusy = false;
+let quackleRequestId = 0;
+let quackleRunToken = 0;
+const quackleRequests = new Map();
 let lastParsed = null;
+
+function resetQuackleWorker(reason = 'Quackle worker stopped') {
+  if (quackleWorker) quackleWorker.terminate();
+  quackleWorker = null;
+  quackleReady = false;
+  for (const request of quackleRequests.values()) {
+    clearTimeout(request.timeoutId);
+    request.reject(new Error(reason));
+  }
+  quackleRequests.clear();
+}
+
+function cancelQuackleRun(status = '') {
+  quackleRunToken++;
+  if (quackleBusy) resetQuackleWorker('Board changed during simulation');
+  quackleBusy = false;
+  const button = document.getElementById('kibitzBtn');
+  if (button) {
+    button.disabled = false;
+    button.textContent = 'Find Best Moves (Quackle Engine)';
+  }
+  const statusEl = document.getElementById('engineStatus');
+  if (statusEl) statusEl.textContent = status;
+}
+
+function callQuackleWorker(type, payload = {}) {
+  return new Promise((resolve, reject) => {
+    if (!quackleWorker) {
+      reject(new Error('Quackle worker is not available'));
+      return;
+    }
+    const id = ++quackleRequestId;
+    const timeoutId = setTimeout(() => {
+      if (quackleRequests.has(id)) resetQuackleWorker('Quackle request timed out');
+    }, 120_000);
+    quackleRequests.set(id, { resolve, reject, timeoutId });
+    try {
+      quackleWorker.postMessage({ id, type, payload });
+    } catch (error) {
+      clearTimeout(timeoutId);
+      quackleRequests.delete(id);
+      reject(error);
+    }
+  });
+}
 
 async function loadQuackleEngine() {
   if (quackleReady) return true;
 
   const statusEl = document.getElementById('engineStatus');
-  statusEl.textContent = 'Loading Quackle engine (~27MB dictionary download)...';
+  statusEl.textContent = 'Loading Quackle engine (~28MB dictionary download)...';
 
   try {
-    // Load the WASM module
-    const script = document.createElement('script');
-    script.src = 'quackle.js';
-    await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = () => reject(new Error('Failed to load quackle.js'));
-      document.head.appendChild(script);
-    });
-
-    // Initialize the module
-    quackleModule = await QuackleModule();
-    statusEl.textContent = 'Initializing engine...';
-
-    // Initialize with the virtual filesystem data directory
-    const ok = quackleModule.initEngine('/data');
-    if (!ok) {
-      statusEl.textContent = 'Engine initialization failed (check console)';
-      return false;
+    if (!quackleWorker) {
+      quackleWorker = new Worker('quackle-worker.js');
+      quackleWorker.addEventListener('message', event => {
+        const request = quackleRequests.get(event.data.id);
+        if (!request) return;
+        quackleRequests.delete(event.data.id);
+        clearTimeout(request.timeoutId);
+        if (event.data.error) {
+          const error = new Error(event.data.error);
+          if (event.data.stack) error.stack = event.data.stack;
+          request.reject(error);
+        } else {
+          request.resolve(event.data.result);
+        }
+      });
+      quackleWorker.addEventListener('error', event => {
+        resetQuackleWorker(event.message || 'Quackle worker failed');
+      });
+      quackleWorker.addEventListener('messageerror', () => {
+        resetQuackleWorker('Quackle worker returned an unreadable response');
+      });
     }
 
-    const info = quackleModule.getEngineInfo();
+    const { info } = await callQuackleWorker('init');
     statusEl.textContent = 'Engine ready. ' + info.replace(/\n/g, ' | ');
     quackleReady = true;
     return true;
   } catch (e) {
+    resetQuackleWorker('Quackle engine initialization failed');
     statusEl.textContent = 'Engine load failed: ' + e.message;
     console.error('Quackle WASM error:', e);
     return false;
@@ -1600,45 +1669,80 @@ async function loadQuackleEngine() {
 
 async function findBestMoves() {
   const btn = document.getElementById('kibitzBtn');
+  const statusEl = document.getElementById('engineStatus');
+  const runToken = ++quackleRunToken;
+  let statusTimer = null;
+  const iterationLabel = `${QUACKLE_SIMULATION_ITERATIONS} ` +
+    (QUACKLE_SIMULATION_ITERATIONS === 1 ? 'round' : 'rounds');
   btn.disabled = true;
   btn.textContent = 'Loading engine...';
 
-  const ready = await loadQuackleEngine();
-  if (!ready) {
-    btn.disabled = false;
-    btn.textContent = 'Find Best Moves (Quackle Engine)';
-    return;
+  try {
+    const ready = await loadQuackleEngine();
+    if (!ready || runToken !== quackleRunToken) return;
+
+    if (!lastParsed || !lastParsed.grid) {
+      statusEl.textContent = 'No board data. Analyze a board first.';
+      return;
+    }
+
+    btn.textContent = `Simulating ${iterationLabel}...`;
+    statusEl.textContent = `Generating moves and running ${iterationLabel}...`;
+    const movesContainer = document.getElementById('movesContainer');
+    movesContainer.classList.add('hidden');
+    movesContainer.innerHTML = '';
+    quackleBusy = true;
+    const startedAt = performance.now();
+    statusTimer = setInterval(() => {
+      const elapsed = Math.floor((performance.now() - startedAt) / 1000);
+      statusEl.textContent = `Generating moves and running ${iterationLabel}... ${elapsed}s`;
+    }, 1000);
+
+    const result = await callQuackleWorker('simulateKibitz', {
+      gridJson: JSON.stringify(lastParsed.grid),
+      rack: lastParsed.rack || '',
+      playerScore: lastParsed.player_score || 0,
+      opponentScore: lastParsed.opponent_score || 0,
+      numMoves: QUACKLE_MOVE_COUNT,
+      iterations: QUACKLE_SIMULATION_ITERATIONS,
+    });
+
+    if (runToken !== quackleRunToken) return;
+    if (result.error) throw new Error(result.error);
+    const moves = Array.isArray(result.moves) ? result.moves : [];
+    const hasCompleteMoves = moves.length > 0 && moves.every(move =>
+      move.samples === QUACKLE_SIMULATION_ITERATIONS &&
+      Number.isFinite(move.win) && move.win >= 0 && move.win <= 1
+    );
+    if (result.simulated !== true ||
+        result.plies !== QUACKLE_SIMULATION_PLIES ||
+        result.iterationsRequested !== QUACKLE_SIMULATION_ITERATIONS ||
+        result.iterationsCompleted !== QUACKLE_SIMULATION_ITERATIONS ||
+        result.candidateCount !== moves.length ||
+        result.totalPlayaheads !== result.iterationsCompleted * moves.length ||
+        !hasCompleteMoves) {
+      throw new Error('Quackle returned incomplete simulation results');
+    }
+
+    renderMoves(moves);
+    const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+    const completedLabel = `${result.iterationsCompleted} ` +
+      (result.iterationsCompleted === 1 ? 'round' : 'rounds');
+    statusEl.textContent = `Found ${moves.length} moves. Simulated ${completedLabel} per move ` +
+      `(${result.totalPlayaheads.toLocaleString()} playouts total) in ${elapsed}s.`;
+  } catch (e) {
+    if (runToken === quackleRunToken) {
+      statusEl.textContent = 'Error: ' + e.message;
+      console.error('Quackle simulation error:', e);
+    }
+  } finally {
+    if (statusTimer) clearInterval(statusTimer);
+    if (runToken === quackleRunToken) {
+      quackleBusy = false;
+      btn.disabled = false;
+      btn.textContent = 'Find Best Moves (Quackle Engine)';
+    }
   }
-
-  if (!lastParsed || !lastParsed.grid) {
-    document.getElementById('engineStatus').textContent = 'No board data. Analyze a board first.';
-    btn.disabled = false;
-    btn.textContent = 'Find Best Moves (Quackle Engine)';
-    return;
-  }
-
-  btn.textContent = 'Generating moves...';
-  document.getElementById('engineStatus').textContent = 'Running kibitz (move generation)...';
-
-  // Small delay to let UI update
-  await new Promise(r => setTimeout(r, 50));
-
-  const gridJson = JSON.stringify(lastParsed.grid);
-  const rack = lastParsed.rack || '';
-  const pScore = lastParsed.player_score || 0;
-  const oScore = lastParsed.opponent_score || 0;
-
-  const result = quackleModule.kibitz(gridJson, rack, pScore, oScore, 15);
-
-  if (result.error) {
-    document.getElementById('engineStatus').textContent = 'Error: ' + result.error;
-  } else {
-    renderMoves(result.moves);
-    document.getElementById('engineStatus').textContent = `Found ${result.moves.length} moves.`;
-  }
-
-  btn.disabled = false;
-  btn.textContent = 'Find Best Moves (Quackle Engine)';
 }
 
 function renderMoves(moves) {
@@ -1646,19 +1750,21 @@ function renderMoves(moves) {
   container.classList.remove('hidden');
 
   let html = `<h3>Best Moves (${moves.length})</h3><div class="moves-list"><table>`;
-  html += '<tr><th>Move</th><th>Score</th><th>Leave</th><th>Win%</th><th>Valuation</th></tr>';
+  html += '<tr><th>Move</th><th>Score</th><th>Leave</th><th>Estimated Win%</th><th>Valuation</th></tr>';
 
   for (let i = 0; i < moves.length; i++) {
     const m = moves[i];
     const tiles = m.tiles.replace(/\./g, '');
     const moveStr = m.position ? `${m.position} ${tiles}` : tiles;
-    const winPct = (m.win * 100).toFixed(2);
+    const winPct = Number.isFinite(m.win) && m.samples > 0 ? `${(m.win * 100).toFixed(1)}%` : '—';
     const valuation = m.equity.toFixed(1);
-    html += `<tr><td><b>${moveStr}</b></td><td>${m.score}</td><td>${m.leave || ''}</td><td>${winPct}</td><td>${valuation}</td></tr>`;
+    html += `<tr><td><b>${moveStr}</b></td><td>${m.score}</td><td>${m.leave || ''}</td>` +
+      `<td data-samples="${m.samples || 0}">${winPct}</td><td>${valuation}</td></tr>`;
   }
 
   html += '</table></div>';
-  container.innerHTML = html;
+  container.innerHTML = html + `<p class="hint">Estimated Win% is Quackle's two-ply ` +
+    `Bogowin estimate from ${QUACKLE_SIMULATION_ITERATIONS} samples per move.</p>`;
 }
 </script>
 </body>

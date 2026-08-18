@@ -7,6 +7,7 @@ Contributor guide for the Crossplay Board Analyzer — a fully offline, determin
 - `index.html` — the entire app (HTML, CSS, and JavaScript in one file). All parsing logic lives here: grid detection, tile detection, letter OCR, and the Quackle integration.
 - `manual.html` — alternate manual board-input page.
 - `quackle.js`, `quackle.wasm`, `quackle.data` — the Quackle WASM engine and dictionary (loaded at runtime).
+- `quackle-worker.js` — runs Quackle move generation and two-ply simulation off the page thread.
 - `test_board.png`, `IMG_3046.png`, `IMG_3047.png`, `IMG_3048.png` — example screenshots used as test fixtures.
 - `test_grid_detection.py` — offline grid-detection test (passes).
 - `test_score_ocr.py` — header score-OCR regression test.
@@ -48,4 +49,4 @@ python3 test_browser_pipeline.py  # real browser pipeline test (needs Playwright
 
 ## Architecture Overview
 
-The pipeline is: **premium-label grid detection → blue/white tile detection → template-match letter and header-score OCR → word finding → Quackle kibitz**. Header scores are read automatically from the screenshot using the local digit templates.
+The pipeline is: **premium-label grid detection → blue/white tile detection → template-match letter and header-score OCR → word finding → Quackle kibitz → simulated win estimates**. Header scores are read automatically from the screenshot using the local digit templates.

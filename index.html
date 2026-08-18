@@ -17,10 +17,6 @@
   #analyzeBtn { background: #4a6fa5; color: #fff; }
   #analyzeBtn:hover { background: #5a7fb5; }
   #analyzeBtn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .key-row { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
-  .key-row input { width: 340px; padding: 10px 14px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; font-family: monospace; }
-  .key-row label { font-size: 0.85rem; color: #888; }
-  .key-row .save-btn { background: #2d4a22; color: #afd89a; padding: 6px 14px; font-size: 0.8rem; }
   .stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
   .stat { background: #16213e; border: 1px solid #333; border-radius: 8px; padding: 12px 20px; min-width: 120px; text-align: center; }
   .stat .val { font-size: 1.5rem; font-weight: 700; color: #fff; }
@@ -48,8 +44,6 @@
   .drop-zone { border: 2px dashed #333; border-radius: 8px; padding: 20px; text-align: center; color: #555; font-size: 0.85rem; margin-bottom: 16px; transition: border-color 0.2s; }
   .drop-zone.drag-over { border-color: #4a6fa5; color: #4a6fa5; }
   .hidden { display: none; }
-  .model-select { display: flex; align-items: center; gap: 8px; }
-  .model-select select { padding: 10px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; }
   #kibitzBtn { background: #8e44ad; color: #fff; margin-top: 12px; }
   #kibitzBtn:hover { background: #9b59b6; }
   #kibitzBtn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -69,21 +63,9 @@
   <h1>Crossplay Board Analyzer</h1>
   <p class="subtitle">Paste a screenshot URL or drop an image to parse the board and find all words.</p>
 
-  <div class="key-row">
-    <label>OpenAI API Key:</label>
-    <input type="password" id="apiKeyInput" placeholder="sk-..." />
-    <button class="save-btn" onclick="saveKey()">Save</button>
-    <label style="font-size:0.75rem;color:#555;">Stored in your browser only.</label>
-  </div>
 
   <div class="input-row">
     <input type="text" id="imageUrlInput" placeholder="Paste image URL (imgur, etc.)" />
-    <div class="model-select">
-      <select id="modelSelect">
-        <option value="gpt-4o">GPT-4o (recommended)</option>
-        <option value="gpt-4o-mini">GPT-4o Mini (fast, cheap)</option>
-      </select>
-    </div>
     <button id="analyzeBtn" onclick="analyze()">Analyze Board</button>
   </div>
 
@@ -122,22 +104,6 @@
 </div>
 
 <script>
-// ── API Key persistence ───────────────────────────────────────────────────
-const apiKeyInput = document.getElementById('apiKeyInput');
-const saved = localStorage.getItem('openai_api_key');
-if (saved) apiKeyInput.value = saved;
-
-function saveKey() {
-  localStorage.setItem('openai_api_key', apiKeyInput.value.trim());
-  setStatus('Key saved.', 'done');
-}
-
-function getKey() {
-  const k = apiKeyInput.value.trim();
-  if (k) localStorage.setItem('openai_api_key', k);
-  return k;
-}
-
 // ── Status ────────────────────────────────────────────────────────────────
 function setStatus(msg, cls) {
   const el = document.getElementById('status');
@@ -936,8 +902,7 @@ async function analyzeHybrid(imageSource) {
     }
   }
 
-  // Step 6: Combine mosaics and send to GPT-4o for letter OCR
-  // Stitch board mosaic + rack mosaic into one image
+  // Step 6: Combine board + rack mosaics for the debug view
   let combinedCanvas = mosaicCanvas;
   if (rackMosaicCanvas) {
     const cW = Math.max(mosaicCanvas.width, rackMosaicCanvas.width);
@@ -1028,50 +993,8 @@ async function analyzeHybrid(imageSource) {
   };
 }
 
-// ── System prompt (anti-hallucination) ────────────────────────────────────
-const SYSTEM_PROMPT = "You are a precise Scrabble board OCR system. You output exactly one JSON object. CRITICAL RULES: (1) TILES are ONLY the solid BLUE squares with white letters — ignore all premium labels (3W, 3L, 2W, 2L), the center star, and empty squares. (2) Each grid cell is exactly one character: a letter A-Z or '.'. No digits ever. (3) You MUST think step-by-step: first identify each word on the board and its exact starting position, then build the grid from those positions.";
-
-// ── Vision prompt ─────────────────────────────────────────────────────────
-const VISION_PROMPT = `Read this Crossplay/Scrabble board screenshot.
-
-STEP 1 — IDENTIFY TILES:
-The board is 15x15. Columns A-O (left to right), Rows 1-15 (top to bottom).
-TILES = solid BLUE squares with a WHITE letter and small superscript number.
-IGNORE everything else: premium labels (3W, 3L, 2W, 2L), empty squares, center star.
-A tile with a GOLD/YELLOW border is the most recently played tile — it IS a tile.
-
-STEP 2 — LOCATE EACH WORD:
-Find every word on the board. For each word, determine:
-- The word itself (sequence of letters)
-- Direction: across (left-to-right) or down (top-to-bottom)
-- Starting position: row number (1-15) and column letter (A-O)
-
-Use these landmarks to count positions:
-- Column A = leftmost, Column O = rightmost (15 columns total)
-- Row 1 = top, Row 15 = bottom
-- Center = Row 8, Column H
-
-STEP 3 — BUILD THE GRID:
-Place each word's letters into a 15x15 grid. Fill all other positions with '.'.
-Verify: each row is exactly 15 characters, only [A-Za-z.], no digits.
-
-Also read the rack (large tiles at bottom), both player names and scores.
-
-Output a single JSON object:
-{
-  "player_score": int,
-  "opponent_score": int,
-  "player_name": "string",
-  "opponent_name": "string",
-  "rack": "LETTERS",
-  "grid": ["15-char string", "15-char string", ... 15 total rows]
-}`;
-
-// ── Analyze (Hybrid CV+API first, fallback to full-board vision) ─────────
+// ── Analyze (fully deterministic — no API key) ──────────────────────────
 async function analyze() {
-  const key = getKey();
-  if (!key) { setStatus('Enter your OpenAI API key first.', 'error'); return; }
-
   const imageUrl = document.getElementById('imageUrlInput').value.trim();
   if (!imageUrl && !base64Image) { setStatus('Provide an image URL or drop an image.', 'error'); return; }
 
@@ -1079,7 +1002,6 @@ async function analyze() {
   btn.disabled = true;
 
   try {
-    // Try hybrid CV+API approach first
     const imageSource = base64Image
       ? { dataUrl: `data:${base64Image.media_type};base64,${base64Image.data}` }
       : { url: imageUrl };
@@ -1088,30 +1010,15 @@ async function analyze() {
     try {
       parsed = await analyzeHybrid(imageSource);
     } catch (e) {
-      console.warn('Hybrid parsing failed, falling back:', e.message);
+      console.warn('Hybrid parsing failed:', e.message);
     }
 
     if (parsed) {
-      // Hybrid succeeded — also try to extract scores via a quick API call
-      try {
-        const scoreParsed = await extractScoresOnly(imageSource);
-        if (scoreParsed) {
-          parsed.player_score = scoreParsed.player_score || 0;
-          parsed.opponent_score = scoreParsed.opponent_score || 0;
-          parsed.player_name = scoreParsed.player_name || 'You';
-          parsed.opponent_name = scoreParsed.opponent_name || 'Opponent';
-        }
-      } catch (e) {
-        console.warn('Score extraction failed:', e.message);
-      }
       renderResult(parsed);
       return;
     }
 
-    // Fallback: full-board GPT-4o vision
-    setStatus('Hybrid failed — using full-board vision (less accurate)...', 'loading');
-    await analyzeFullBoard(imageUrl);
-
+    setStatus('Could not parse the board from this image.', 'error');
   } catch (e) {
     setStatus('Error: ' + e.message, 'error');
   } finally {
@@ -1119,158 +1026,8 @@ async function analyze() {
   }
 }
 
-async function extractScoresOnly(imageSource) {
-  const key = getKey();
-  const model = document.getElementById('modelSelect').value;
-  const imageContent = imageSource.dataUrl
-    ? { type: 'image_url', image_url: { url: imageSource.dataUrl } }
-    : { type: 'image_url', image_url: { url: imageSource.url } };
 
-  const body = {
-    model, max_tokens: 256,
-    response_format: { type: 'json_object' },
-    messages: [{
-      role: 'user',
-      content: [
-        imageContent,
-        { type: 'text', text: 'Read ONLY the player names and scores from this Crossplay screenshot. Output JSON: {"player_name":"...","player_score":N,"opponent_name":"...","opponent_score":N}' }
-      ]
-    }]
-  };
 
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) return null;
-  const data = await resp.json();
-  return JSON.parse(data.choices[0].message.content);
-}
-
-async function analyzeFullBoard(imageUrl) {
-  setStatus('Analyzing with full-board vision... (takes ~15-30s)', 'loading');
-
-  const key = getKey();
-  const imageContent = base64Image
-    ? { type: 'image_url', image_url: { url: `data:${base64Image.media_type};base64,${base64Image.data}` } }
-    : { type: 'image_url', image_url: { url: imageUrl } };
-
-  const model = document.getElementById('modelSelect').value;
-
-  const body = {
-    model: model,
-    max_tokens: 4096,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [ imageContent, { type: 'text', text: VISION_PROMPT } ]
-      }
-    ]
-  };
-
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${key}`
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
-  }
-
-  const data = await resp.json();
-  const text = data.choices[0].message.content;
-
-  const parsed = JSON.parse(text);
-  if (parsed.grid) {
-    parsed.grid = sanitizeGrid(parsed.grid);
-  }
-  renderResult(parsed);
-  setStatus('Done (fallback mode). ' + (parsed.grid ? parsed.grid.filter(r => r.replace(/\./g,'').length > 0).length + ' rows with tiles.' : ''), 'done');
-}
-
-/* ── Anthropic API (commented out — CORS blocked by org policy) ───────────
-async function analyze_anthropic() {
-  const key = getKey();
-  const imageContent = base64Image
-    ? { type: 'image', source: { type: 'base64', media_type: base64Image.media_type, data: base64Image.data } }
-    : { type: 'image', source: { type: 'url', url: imageUrl } };
-  const body = {
-    model: 'claude-sonnet-4-6', max_tokens: 4096, system: SYSTEM_PROMPT,
-    messages: [
-      { role: 'user', content: [ imageContent, { type: 'text', text: VISION_PROMPT } ] },
-      { role: 'assistant', content: [{ type: 'text', text: '{"' }] }
-    ]
-  };
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify(body)
-  });
-  const data = await resp.json();
-  const text = '{"' + data.content[0].text;
-  // ... parse and render
-}
-*/
-
-// ── Grid sanitization (strip premium square garbage) ─────────────────────
-function sanitizeGrid(grid) {
-  if (!Array.isArray(grid)) {
-    console.warn('[sanitizeGrid] grid is not an array, returning empty 15x15');
-    return Array(15).fill('...............');
-  }
-
-  let totalFixed = 0;
-  const cleaned = [];
-
-  for (let r = 0; r < 15; r++) {
-    let row = (grid[r] || '').replace(/\s/g, '');
-
-    // Strip multi-char premium labels that GPT may have inserted as cell values.
-    // E.g. "3W" "2L" "3L" "2W" appearing in the row text — replace with "."
-    row = row.replace(/[23][WwLl]/g, '.');
-
-    // Now enforce: each character must be [A-Za-z.], replace anything else with "."
-    let sanitized = '';
-    for (let i = 0; i < row.length; i++) {
-      const ch = row[i];
-      if (/^[A-Za-z.]$/.test(ch)) {
-        sanitized += ch;
-      } else {
-        sanitized += '.';
-        totalFixed++;
-      }
-    }
-
-    // Pad or truncate to exactly 15 characters
-    if (sanitized.length < 15) {
-      const padCount = 15 - sanitized.length;
-      if (padCount > 0) {
-        console.warn(`[sanitizeGrid] Row ${r + 1} too short (${sanitized.length} chars), padding with '.'`);
-        totalFixed += padCount;
-      }
-      sanitized = sanitized.padEnd(15, '.');
-    } else if (sanitized.length > 15) {
-      console.warn(`[sanitizeGrid] Row ${r + 1} too long (${sanitized.length} chars), truncating`);
-      sanitized = sanitized.substring(0, 15);
-    }
-
-    cleaned.push(sanitized);
-  }
-
-  if (totalFixed > 0) {
-    console.warn(`[sanitizeGrid] Fixed ${totalFixed} invalid character(s) in grid. Premium square labels or digits were stripped.`);
-  }
-
-  return cleaned;
-}
 
 // ── Parse & render ────────────────────────────────────────────────────────
 function renderResult(parsed) {

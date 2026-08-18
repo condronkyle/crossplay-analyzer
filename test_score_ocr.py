@@ -2,15 +2,13 @@
 """
 Test the header score OCR against ground truth across all example screenshots.
 
-Status: EXPECTED TO FAIL for now — this is the scaffolding for the TODO
-header-score-ocr. Real digit templates (extracted from the actual Crossplay
-headers) work for isolated digits, but touching digits (e.g. "10" in "108")
-and trailing UI elements make full-score segmentation unreliable.
+Status: PASSING. The test calibrates digit templates from the actual
+Crossplay headers, selects the upper score band (above the player name),
+handles touching digits, and ignores separated trailing UI elements.
 
-As the OCR improves, this test should start passing score-by-score. It is
-self-contained: it extracts the digit templates from the example images using
-the known digit boundaries, then reads each header score and compares to the
-ground truth.
+It is self-contained: it extracts digit templates from the example images
+using known digit boundaries, then reads each header score and compares it to
+the ground truth.
 
 Run: python3 test_score_ocr.py   (needs numpy, Pillow, scipy)
 """
@@ -33,37 +31,42 @@ GROUND_TRUTH = {
 # ── Score band / region geometry per image ────────────────────────────────
 # (score_y0, score_y1, left_x0, left_x1, right_x0, right_x1)
 GEOMETRY = {
-    'test_board.png': (391, 426, 150, 400, 800, 1150),
-    'IMG_3046.png':   (391, 426, 141, 400, 801, 1143),
-    'IMG_3047.png':   (391, 426, 141, 400, 801, 1143),
-    'IMG_3048.png':   (966, 989, 150, 250, 890, 1020),
+    # Scores are the upper line of each name/score pair. The lower line is
+    # the player name (the original scaffold accidentally used that band).
+    'test_board.png': (334, 370, 150, 400, 800, 1150),
+    'IMG_3046.png':   (334, 370, 141, 400, 801, 1143),
+    'IMG_3047.png':   (334, 370, 141, 400, 801, 1143),
+    'IMG_3048.png':   (679, 719, 220, 390, 800, 950),
 }
 
 # ── Known digit boundaries for template extraction: (image, digit, x0,x1,y0,y1)
 DIGIT_SAMPLES = [
     # test_board.png
-    ('test_board.png', '1', 1039, 1045, 391, 426),
-    ('test_board.png', '3', 1049, 1070, 400, 426),
-    ('test_board.png', '0', 1071, 1092, 400, 426),
-    ('test_board.png', '1', 178, 196, 391, 425),
-    ('test_board.png', '0', 198, 227, 400, 426),
-    ('test_board.png', '8', 233, 253, 400, 426),
+    ('test_board.png', '1', 1039, 1052, 334, 369),
+    ('test_board.png', '3', 1056, 1078, 334, 369),
+    ('test_board.png', '0', 1082, 1107, 334, 369),
+    ('test_board.png', '1', 181, 196, 334, 369),
+    ('test_board.png', '0', 198, 223, 334, 369),
+    ('test_board.png', '8', 226, 250, 334, 369),
     # IMG_3046.png
-    ('IMG_3046.png', '4', 178, 195, 391, 425),
-    ('IMG_3046.png', '3', 195, 228, 400, 426),
-    ('IMG_3046.png', '9', 920, 940, 391, 425),
-    ('IMG_3046.png', '3', 946, 971, 400, 426),
+    ('IMG_3046.png', '4', 181, 206, 334, 369),
+    ('IMG_3046.png', '3', 209, 231, 334, 369),
+    ('IMG_3046.png', '9', 946, 970, 334, 369),
+    ('IMG_3046.png', '3', 974, 996, 334, 369),
     # IMG_3047.png
-    ('IMG_3047.png', '2', 178, 195, 391, 425),
-    ('IMG_3047.png', '3', 195, 228, 400, 426),
-    ('IMG_3047.png', '5', 228, 253, 400, 426),
-    ('IMG_3047.png', '2', 866, 888, 391, 426),
-    ('IMG_3047.png', '8', 890, 913, 400, 426),
-    ('IMG_3047.png', '5', 917, 938, 400, 426),
+    ('IMG_3047.png', '2', 181, 203, 334, 369),
+    ('IMG_3047.png', '3', 206, 228, 334, 369),
+    ('IMG_3047.png', '5', 233, 254, 334, 369),
+    ('IMG_3047.png', '2', 923, 945, 334, 369),
+    ('IMG_3047.png', '8', 948, 972, 334, 369),
+    ('IMG_3047.png', '5', 975, 996, 334, 369),
     # IMG_3048.png (post-game screen)
-    ('IMG_3048.png', '4', 156, 171, 966, 989),
-    ('IMG_3048.png', '0', 175, 190, 966, 989),
-    ('IMG_3048.png', '7', 195, 210, 966, 989),
+    ('IMG_3048.png', '4', 265, 294, 679, 719),
+    ('IMG_3048.png', '0', 296, 325, 679, 719),
+    ('IMG_3048.png', '7', 329, 354, 679, 719),
+    ('IMG_3048.png', '4', 835, 864, 679, 719),
+    ('IMG_3048.png', '1', 867, 884, 679, 719),
+    ('IMG_3048.png', '2', 887, 913, 679, 719),
 ]
 
 
@@ -151,6 +154,18 @@ def read_score(dark, x0, x1, y0, y1, tpl, tpl_dt):
                 start = None
     if start is not None:
         runs.append((start, len(colp) - 1))
+
+    # The score is the first compact glyph cluster in each header half. A
+    # large gap separates it from the controls/name text farther to the
+    # right; do not let that trailing UI become an extra score digit.
+    if runs:
+        cluster = [runs[0]]
+        for run in runs[1:]:
+            if run[0] - cluster[-1][1] - 1 > 15:
+                break
+            cluster.append(run)
+        runs = cluster
+
     result = ''
     for (s, e) in runs:
         g = band[:, s:e + 1]
@@ -180,7 +195,7 @@ def main():
         print(f"     player: read='{left}'  expected='{gt_left}'  {'OK' if left == gt_left else 'MISMATCH'}")
         print(f"     opp:    read='{right}'  expected='{gt_right}'  {'OK' if right == gt_right else 'MISMATCH'}")
 
-    print("\n" + ("ALL SCORES PASS" if all_pass else "SOME SCORES FAIL (expected — header OCR is a TODO)"))
+    print("\n" + ("ALL SCORES PASS" if all_pass else "SOME SCORES FAIL"))
     return 0 if all_pass else 1
 
 

@@ -96,7 +96,7 @@
     <div id="debugContent">
       <div style="display:flex;gap:16px;flex-wrap:wrap;">
         <div><p style="color:#888;font-size:0.8rem;">Grid Overlay</p><canvas id="debugGridCanvas" style="max-width:400px;width:100%;border:1px solid #333;"></canvas></div>
-        <div><p style="color:#888;font-size:0.8rem;">Tile Mosaic (sent to API)</p><img id="debugMosaicImg" style="max-width:600px;width:100%;border:1px solid #333;" /></div>
+        <div><p style="color:#888;font-size:0.8rem;">Tile Mosaic (local OCR)</p><img id="debugMosaicImg" style="max-width:600px;width:100%;border:1px solid #333;" /></div>
       </div>
       <pre id="debugLog" style="color:#888;font-size:0.75rem;max-height:200px;overflow-y:auto;margin-top:8px;"></pre>
     </div>
@@ -145,7 +145,7 @@ function loadFile(file) {
   reader.readAsDataURL(file);
 }
 
-// ── Hybrid CV+API Board Parsing ───────────────────────────────────────────
+// ── Offline CV Board Parsing ──────────────────────────────────────────────
 
 function rgbToHsv(r, g, b) {
   // Returns [H, S, V] in OpenCV convention: H=[0,179], S=[0,255], V=[0,255]
@@ -161,6 +161,75 @@ function rgbToHsv(r, g, b) {
   return [Math.round(h), Math.round(s), Math.round(v)];
 }
 
+function detectBoardGrid(imageData, width, height) {
+  return detectBoardGridFromCellRows(imageData, width, height)
+    || detectBoardGridFromPremiumLabels(imageData, width, height);
+}
+
+function detectBoardGridFromCellRows(imageData, width, height) {
+  const rowProfile = new Uint32Array(height);
+  const searchTop = Math.floor(height * 0.20);
+  const searchBottom = Math.floor(height * 0.80);
+
+  for (let y = searchTop; y < searchBottom; y++) {
+    let count = 0;
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      if (Math.min(imageData[idx], imageData[idx + 1], imageData[idx + 2]) < 250) count++;
+    }
+    rowProfile[y] = count;
+  }
+
+  const runs = [];
+  let start = -1;
+  for (let y = searchTop; y < searchBottom; y++) {
+    if (rowProfile[y] > width * 0.50) {
+      if (start < 0) start = y;
+    } else if (start >= 0) {
+      if (y - start >= 10) runs.push([start, y - 1]);
+      start = -1;
+    }
+  }
+  if (start >= 0 && searchBottom - start >= 10) runs.push([start, searchBottom - 1]);
+
+  let best = null;
+  const expectedPitch = width / 15;
+  for (let i = 0; i + 15 <= runs.length; i++) {
+    const candidate = runs.slice(i, i + 15);
+    const pitches = [];
+    const heights = [];
+    for (let j = 0; j < candidate.length; j++) {
+      heights.push(candidate[j][1] - candidate[j][0] + 1);
+      if (j > 0) pitches.push(candidate[j][0] - candidate[j - 1][0]);
+    }
+    const pitch = medianOf(pitches);
+    const runHeight = medianOf(heights);
+    if (pitch < expectedPitch * 0.75 || pitch > expectedPitch * 1.10) continue;
+
+    const pitchError = Math.max(...pitches.map(value => Math.abs(value - pitch))) / pitch;
+    const heightError = Math.max(...heights.map(value => Math.abs(value - runHeight))) / pitch;
+    if (pitchError > 0.15 || heightError > 0.20) continue;
+
+    const score = pitchError + heightError + Math.abs(pitch - expectedPitch) / expectedPitch;
+    if (!best || score < best.score) best = { candidate, pitch, runHeight, score };
+  }
+
+  if (!best) return null;
+
+  const cellW = best.pitch;
+  const cellH = best.pitch;
+  const gridTop = best.candidate[0][0] - Math.max(0, (best.pitch - best.runHeight) / 2);
+  const gridLeft = (width - 15 * cellW) / 2;
+  const hGrid = [], vGrid = [];
+  for (let i = 0; i <= 15; i++) {
+    hGrid.push(Math.max(0, Math.min(height - 1, Math.round(gridTop + i * cellH))));
+    vGrid.push(Math.max(0, Math.min(width - 1, Math.round(gridLeft + i * cellW))));
+  }
+
+  console.log(`Grid detection (cell rows): cellW=${cellW.toFixed(1)} cellH=${cellH.toFixed(1)}, gridLeft=${gridLeft.toFixed(1)}, gridTop=${gridTop.toFixed(1)}`);
+  return { hGrid, vGrid, cellW, cellH, method: 'cell-rows' };
+}
+
 // ── Premium label detection (NYT Crossplay) ─────────────────────────────
 // The NYT Crossplay board is a FIXED 15x15 template whose premium squares
 // carry dark text labels ("3W"/"2L") on pale pastel backgrounds. The labels
@@ -174,7 +243,7 @@ function rgbToHsv(r, g, b) {
 // The board is square, so cellW = cellH; gridLeft comes from the label
 // column extent (robust to a few px). This is resolution-independent.
 // Falls back to the prior-based heuristic if labels can't be found.
-function detectBoardGrid(imageData, width, height) {
+function detectBoardGridFromPremiumLabels(imageData, width, height) {
   // Premium label mask: dark, saturated pixels (the "3W"/"2L" glyphs).
   // Excludes white tile letters (bright), pale pastel backgrounds (low
   // saturation), and blue tiles (bright blue).
@@ -533,7 +602,9 @@ function readTileLetter(imageData, width, x1, y1, x2, y2) {
   const g = extractGlyphMask(imageData, width, x1, y1, x2, y2);
   if (!g) return null;
   const norm = normalizeGlyph(g.mask, g.w, g.h);
-  return matchLetter(norm);
+  const letter = matchLetter(norm);
+  if (letter === 'I' && g.w / g.h > 0.35) return 'J';
+  return letter;
 }
 
 // Match a glyph mask against the digit templates used by header OCR.
@@ -721,9 +792,8 @@ function findHeaderScoreBand(imageData, width, height, gridTop) {
     }
   }
   // Post-game headers can merge the score and name into one tall band. Ignore
-  // the small status/icon fragments before it and choose the first substantial
-  // band.
-  const band = bands.find(b => b[1] - b[0] + 1 >= 15) || bands[0];
+  // the status and result text above it and choose the last substantial band.
+  const band = [...bands].reverse().find(b => b[1] - b[0] + 1 >= 15) || bands[bands.length - 1];
   // The score is its upper line, approximately one glyph height tall.
   const bandH = band[1] - band[0] + 1;
   const bandEnd = bandH > 50 ? Math.min(top - 1, band[0] + 42) : band[1];
@@ -1108,9 +1178,9 @@ async function detectRackTiles(canvas, imageData, width, height, gridBottom) {
   return rackTiles;
 }
 
-async function analyzeHybrid(imageSource) {
+async function analyzeOffline(imageSource) {
   // imageSource: either { url: string } or { dataUrl: string }
-  // Returns parsed board object or null if hybrid detection fails
+  // Returns parsed board object or null if detection fails
 
   setStatus('Loading image for CV analysis...', 'loading');
 
@@ -1196,14 +1266,14 @@ async function analyzeHybrid(imageSource) {
   document.getElementById('debugSection').classList.remove('hidden');
 
   let debugLog = `Image: ${w}x${h}\n`;
-  debugLog += `Grid method: ${grid.method || 'unknown'} (premium-anchored / prior fallback / fallback)\n`;
+  debugLog += `Grid method: ${grid.method || 'unknown'}\n`;
   debugLog += `Grid: top=${grid.hGrid[0]} bottom=${grid.hGrid[15]} left=${grid.vGrid[0]} right=${grid.vGrid[15]}\n`;
   debugLog += `Cell size: ${grid.cellW.toFixed(1)}x${grid.cellH.toFixed(1)} (${(15*grid.cellW/w*100).toFixed(1)}% of width)\n`;
   debugLog += `Tiles detected: ${tilePositions.length}\n`;
   debugLog += `Positions: ${tilePositions.map(t => `${t.row+1}${String.fromCharCode(65+t.col)}`).join(', ')}\n`;
 
   if (tilePositions.length === 0) {
-    debugLog += 'No tiles detected, falling back to full-board API\n';
+    debugLog += 'No tiles detected.\n';
     document.getElementById('debugLog').textContent = debugLog;
     return null;
   }
@@ -1342,11 +1412,11 @@ async function analyzeHybrid(imageSource) {
   debugLog += `Header score OCR: ${headerScores.player || '?'} vs ${headerScores.opponent || '?'}\n`;
   document.getElementById('debugLog').textContent = debugLog;
 
-  setStatus(`Hybrid parsing complete: ${tilePositions.length} tiles, ${missedTiles} unrecognized.`, 'done');
+  setStatus(`Offline parsing complete: ${tilePositions.length} tiles, ${missedTiles} unrecognized.`, 'done');
 
   return {
     grid: gridStrings,
-    rack: rack || '?',
+    rack,
     player_score: playerScore,
     opponent_score: opponentScore,
     player_name: 'You',
@@ -1369,9 +1439,9 @@ async function analyze() {
 
     let parsed = null;
     try {
-      parsed = await analyzeHybrid(imageSource);
+      parsed = await analyzeOffline(imageSource);
     } catch (e) {
-      console.warn('Hybrid parsing failed:', e.message);
+      console.warn('Offline parsing failed:', e.message);
     }
 
     if (parsed) {
@@ -1477,8 +1547,9 @@ function renderResult(parsed) {
   document.getElementById('wordsContainer').innerHTML = whtml;
   document.getElementById('contentRow').classList.remove('hidden');
 
-  // Show kibitz button if we have a rack
-  if (parsed.rack && parsed.rack.length > 0) {
+  document.getElementById('kibitzBtn').classList.add('hidden');
+  lastParsed = null;
+  if (/^[A-Z]{1,7}$/.test(parsed.rack || '')) {
     document.getElementById('kibitzBtn').classList.remove('hidden');
     lastParsed = parsed;
   }

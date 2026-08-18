@@ -69,14 +69,6 @@
     <button id="analyzeBtn" onclick="analyze()">Analyze Board</button>
   </div>
 
-  <div class="score-row">
-    <label>Your Score:</label>
-    <input type="number" id="playerScoreInput" value="0" min="0" style="width:70px;" />
-    <label>Opponent Score:</label>
-    <input type="number" id="opponentScoreInput" value="0" min="0" style="width:70px;" />
-    <span style="font-size:0.75rem;color:#555;">(used only when header score OCR is unavailable)</span>
-  </div>
-
   <div class="drop-zone" id="dropZone">
     Or drag & drop / paste (Ctrl+V) a screenshot here
   </div>
@@ -523,8 +515,8 @@ function chamferDistance(a, dtA, b, dtB) {
 }
 
 // Match a normalized glyph against the A-Z letter templates only (the
-// GLYPH_TEMPLATES set also carries 0-9 for header score OCR, but
-// tile letters must only ever match A-Z).
+// GLYPH_TEMPLATES set also carries 0-9 for header score OCR, but tile
+// letters must only ever match A-Z).
 const LETTER_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 function matchLetter(norm) {
   const dtA = edt(norm);
@@ -1339,9 +1331,9 @@ async function analyzeHybrid(imageSource) {
 
   const gridStrings = boardGrid.map(row => row.join(''));
 
-  // Step 7b: Read the two dark score bands above the board. This is fully
-  // local/deterministic; null means the screenshot did not expose a usable
-  // score band and the manual inputs remain the fallback.
+  // Step 7b: Read the two dark score bands above the board using fully
+  // local/deterministic OCR. A null score means the screenshot did not
+  // expose a usable score band.
   const headerScores = readHeaderScores(pixels, w, h, grid.hGrid[0]);
   const playerScore = headerScores.player && /^\d+$/.test(headerScores.player)
     ? parseInt(headerScores.player, 10) : null;
@@ -1383,14 +1375,6 @@ async function analyze() {
     }
 
     if (parsed) {
-      // Manual fields are a fallback for screenshots without a readable
-      // header, and also let a user correct an ambiguous OCR result.
-      if (parsed.player_score === null) {
-        parsed.player_score = parseInt(document.getElementById('playerScoreInput').value) || 0;
-      }
-      if (parsed.opponent_score === null) {
-        parsed.opponent_score = parseInt(document.getElementById('opponentScoreInput').value) || 0;
-      }
       renderResult(parsed);
       return;
     }

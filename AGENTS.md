@@ -9,7 +9,7 @@ Contributor guide for the Crossplay Board Analyzer — a fully offline, determin
 - `quackle.js`, `quackle.wasm`, `quackle.data` — the Quackle WASM engine and dictionary (loaded at runtime).
 - `test_board.png`, `IMG_3046.png`, `IMG_3047.png`, `IMG_3048.png` — example screenshots used as test fixtures.
 - `test_grid_detection.py` — offline grid-detection test (passes).
-- `test_score_ocr.py` — header score-OCR test (currently fails; score OCR is a TODO).
+- `test_score_ocr.py` — header score-OCR regression test.
 
 ## Build, Test, and Development Commands
 
@@ -18,7 +18,7 @@ There is no build step — it is a static site.
 ```bash
 python3 -m http.server 8000   # serve the app locally, then open http://localhost:8000
 python3 test_grid_detection.py  # grid/tile detection test (needs numpy, Pillow, scipy)
-python3 test_score_ocr.py       # score OCR test (expected to fail until the TODO is done)
+python3 test_score_ocr.py       # header score OCR regression test
 ```
 
 ## Coding Style & Naming Conventions
@@ -33,7 +33,7 @@ python3 test_score_ocr.py       # score OCR test (expected to fail until the TOD
 - Python tests live at the repo root (`test_*.py`) and run against the example screenshots.
 - The JS pipeline is validated with Node scripts that load the real images and assert 31/31 tiles and 31/31 letters.
 - New CV/OCR work should update or add a `test_*.py` so regressions are caught offline.
-- `test_score_ocr.py` is the pass/fail gate for the header score-OCR TODO.
+- `test_score_ocr.py` is the pass/fail gate for header score OCR.
 
 ## Commit & Pull Request Guidelines
 
@@ -44,4 +44,4 @@ python3 test_score_ocr.py       # score OCR test (expected to fail until the TOD
 
 ## Architecture Overview
 
-The pipeline is: **premium-label grid detection → blue/white tile detection → template-match letter OCR → word finding → Quackle kibitz**. Scores are entered manually (header score OCR is a `TODO(header-score-ocr)`); the scaffolding (0–9 glyph templates, `detectHeaderZero`) is kept for that future work.
+The pipeline is: **premium-label grid detection → blue/white tile detection → template-match letter and header-score OCR → word finding → Quackle kibitz**. Header scores are read automatically from the screenshot using the local digit templates.

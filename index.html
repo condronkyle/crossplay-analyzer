@@ -323,6 +323,216 @@ function medianOf(arr) {
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
+
+
+// ── Deterministic letter OCR (template matching — no API key) ───────────
+// Tile letters are rendered in a bold sans-serif font. We extract each
+// tile's letter glyph (largest white connected component), normalize it
+// (bilinear resize to a fixed height, center by center of mass), and match
+// against 26 pre-rendered A-Z templates using Chamfer distance (Euclidean
+// distance transform). Fully deterministic and offline.
+
+const GLYPH_TEMPLATES = { H: 32, W: 44, chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', data: {
+  A: 'AAA/4AAAAAP+AAAAAD/gAAAAB/8AAAAAf/AAAAAH/4AAAAD/+AAAAA//gAAAAf38AAAAH9/AAAAB/fwAAAA/j+AAAAP4/gAAAD8P4AAAB/B/AAAAfwfwAAAP4H+AAAD+A/gAAA/gP4AAAf4D/AAAH///wAAB///8AAA////gAAP///4AAD///+AAB/gA/wAAfwAH8AAP8AB/gAD/AAf4AA/gAD+AAf4AA/wAAAAAAAA=',
+  B: 'AD///AAAA///8AAAP///wAAD///8AAA////gAAP///8AAD+AD/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AP4AAD+AP+AAA////AAAP///gAAD///8AAA////gAAP///8AAD+AD/AAA/gAf4AAP4AD+AAD+AA/gAA/gAP4AAP4AD+AAD+AB/gAA/gA/4AAP///8AAD///+AAA////gAAP///wAAD///wAAA///wAA=',
+  C: 'AAAP+AAAAAf/4AAAAP//gAAAH//8AAAD///gAAB/5/4AAA/4D/AAAP4AfwAAH+AD+AAB/AA/gAAfwAH4AAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAB/AA/gAAfwAP4AAH+AH8AAA/wB/AAAP+B/gAAB///4AAAf//8AAAD//+AAAAP//AAAAB//gAAAAD/gAA=',
+  D: 'AAAAAAAAA///gAAAP//+AAAD///wAAA///+AAAP///wAAD///+AAA/gB/gAAP4AP8AAD+AB/AAA/gAf4AAP4AD+AAD+AA/gAA/gAP4AAP4AD+AAD+AA/gAA/gAP4AAP4AD+AAD+AA/gAA/gAP4AAP4AD+AAD+AA/gAA/gAfwAAP4AH8AAD+AD/AAA/gB/gAAP4A/4AAD///8AAA////AAAP///gAAD///wAAA///wAA=',
+  E: 'AAAAAAAAAP///gAAD///4AAA///+AAAP///gAAD///4AAA///+AAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAP///AAAD///wAAA///8AAAP///AAAD///wAAA///8AAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA////AAAP///wAAD///8AAA////AAAP///wA=',
+  F: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD///4AAA///+AAAP///gAAD///4AAA///+AAAP///gAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA///4AAAP//+AAAD///gAAA///4AAAP//+AAAD///gAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAA=',
+  G: 'AAA/8AAAAA//wAAAA///AAAAf//4AAAP///AAAH/j/wAAD/gH+AAA/wA/wAAf4AH8AAH8AB/AAB/AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4B//AAD+Af/wAA/gH/8AAP4B//AAD+Af/wAA/gAD8AAP4AA/AAB/AAPwAAfwAH8AAD+AD/AAA/4B/wAAH/j/8AAA////AAAH//3wAAA//58AAAH/8PAAAAf8AAA=',
+  H: 'AAAAAAAAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA////wAAP///8AAD////AAA////wAAP///8AAD////AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwA=',
+  I: 'AAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAA=',
+  J: 'AAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAA/AfwAAAPwH8AAAD8B/AAAA/AfwAAAP4H8AAAD+B/AAAA/g/wAAAH//4AAAB//+AAAAP//AAAAD//wAAAAAAAAAAAAAAAAA=',
+  K: 'AA/gA/4AAP4Af8AAD+AP+AAA/gD/AAAP4B/gAAD+A/wAAA/gf4AAAP4P8AAAD+H+AAAA/j/AAAAP5/gAAAD+/wAAAA//4AAAAP/+AAAAD//wAAAA//8AAAAP//gAAAD//8AAAA///gAAAP+f4AAAD/D/AAAA/g/4AAAP4H+AAAD+A/wAAA/gP+AAAP4B/wAAD+AP8AAA/gD/gAAP4Af8AAD+AD/gAA/gA/4AAP4AH/A=',
+  L: 'AAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP///gAAD///4AAA///+AAAAAAAAAAAAAAAAAAAAAAA=',
+  M: 'AAAAAAAAH/gA/8AB/4AP/AAf+AD/wAH/wB/8AB/8Af/AAf/AH/wAH/wB/8AB/+Af/AAf/gP/wAH74D78AB++A+/AAfvwPvwAH58Hz8AB+fB8/AAfnwfPwAH5+Hz8AB+Pj8/AAfj4+PwAH4+Pj8AB+Pj4/AAfh9+PwAH4ffD8AB+H3w/AAfh98PwAH4f/D8AB+D/g/AAfg/4PwAH4P+D8AB+D/g/AAfg/4PwAH4H8D8A=',
+  N: 'AAAAAAAAA/gAPwAAP8AD8AAD/gA/AAA/4APwAAP/AD8AAD/wA/AAA/+APwAAP/gD8AAD/8A/AAA//APwAAP/4D8AAD9/A/AAA/PwPwAAPz+D8AAD8fg/AAA/D8PwAAPw/j8AAD8H4/AAA/B/PwAAPwPz8AAD8B+/AAA/Af/wAAPwD/8AAD8A//AAA/AH/wAAPwB/8AAD8AP/AAA/AB/wAAPwAf8AAD8AD/AAA/AA/wA=',
+  O: 'AAB/8AAAAB//wAAAA//+AAAA///wAAAP//+AAAH/j/wAAD/AP+AAA/gA/gAAfwAH8AAH8AB/AAD+AAPwAA/gAD+AAP4AA/gAD+AAP4AA/AAD+AAPwAAfgAD8AAH4AA/AAD+AAP4AA/gAD+AAP4AA/gAD+AAP4AA/AAB/AAfwAAfwAH8AAD+AD+AAA/wD/gAAH/j/wAAA///4AAAP//8AAAA//+AAAAH//AAAAAf/AAA=',
+  P: 'AAAAAAAAAAAAAAAAAAAAAAAA///gAAAP//+AAAD///wAAA///+AAAP///wAAD///8AAA/gB/gAAP4Af4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4Af4AAD+Af8AAA////AAAP///wAAD///4AAA///8AAAP//8AAAD//wAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAA=',
+  Q: 'AAB/4AAAAB//gAAAB//8AAAA///wAAAf//+AAAH/D/gAAD/AP8AAB/AB/AAAfwAP4AAH4AB+AAD+AAfwAA/gAH8AAPwAA/AAD8AAfwAA/AAD8AAPwAA/AAD8AAPwAA/AAH8AAPwAB/AAD+AEfwAA/gDn4AAH4B/+AAB/Af/gAAP4D/wAAD/Af8AAAf//+AAAD///wAAAf//+AAAD///wAAAP/z4AAAAfgcAAAAAADAA=',
+  R: 'AAAAAAAAAAAAAAAAP//+AAAD///4AAA////AAAP///4AAD///+AAA////wAAP4AP8AAD+AB/AAA/gAfwAAP4AD8AAD+AA/AAA/gAfwAAP4AH8AAD+AD+AAA////gAAP///wAAD///wAAA///+AAAP///wAAD+Af+AAA/gB/gAAP4AP4AAD+AD/AAA/gA/wAAP4AH8AAD+AB/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwA=',
+  S: 'AAB/4AAAAB//gAAAA//8AAAAf//wAAAP//8AAAH/H/gAAB/AP4AAAfgB/AAAPwAfwAAD8AD8AAA/gAAAAAH8AAAAAB/4AAAAAf/8AAAAD//4AAAAf//gAAAD//+AAAAH//wAAAAH/8AAAAAH/gAAAAAf4AAAAAD+AAA/AAfgAAP4AH4AAD+AD+AAA/wB/gAAH/j/wAAA///4AAAH//+AAAA///AAAAH//AAAAAP/AAA=',
+  T: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD////AAA////wAAP///8AAD////AAA////wAAP///8AAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAAAAA/AAAAAAPwAAAAAD8AAA=',
+  U: 'AD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD+AD+AAA/gA/gAAP4AP4AAD/AH8AAAf4D/AAAH///wAAA///4AAAH//8AAAA//+AAAAH//AAAAAP+AAA=',
+  V: 'AAAAAAAAAAAAAAAAfwAD+AAH+AA/gAA/gAfwAAP4AH8AAD/AB/AAAfwA/gAAH8AP4AAB/AD+AAAP4A/AAAD+AfwAAA/gH8AAAH8B+AAAB/A/gAAAfwP4AAAD8D8AAAA/g/AAAAP4fwAAAB+H4AAAAfx+AAAAH8/gAAAA/PwAAAAPz8AAAAD+/AAAAAf/gAAAAH/4AAAAB/+AAAAAP/AAAAAD/wAAAAA/8AAAAAH+AAA=',
+  W: 'AAAAAAAD+AH8AP4/wD/gD+H8A/4A/h/AP+AfwfwD/gH8H+A/4B/A/gP/AfgP4H/wP4D+B/8D+A/gffA/gH8H3wPwB/B9+H8Afw/fh/AD8Pj4fwA/j4+H4AP4+Pz+AB+fj8/gAfn4/PwAH98Hz8AB/fB8/AAP3wffgAD98H/4AA//B/+AAP/gP/gAB/4D/wAAf+A/8AAH/gP/AAA/4D/wAAP8Af4AAD/AH+AAAfwB/gA=',
+  X: 'AH+AD+AAB/gB/gAAP8A/wAAD/AP8AAAf4H+AAAD+B/AAAA/w/wAAAH+P4AAAA/n8AAAAP9/AAAAB//gAAAAf/4AAAAD/8AAAAAf+AAAAAH/gAAAAA/wAAAAAP+AAAAAH/gAAAAD/8AAAAA//gAAAAf/4AAAAP//AAAAD+fwAAAB/n+AAAAfw/wAAAP8P8AAAH+B/gAAB/AP8AAA/wD/AAAf4Af4AAH+AH+AAD/AA/wA=',
+  Y: 'AAAAAAAAAAAAAAAAAAAAAAAP8AB/gAB/gA/wAAf4AP8AAD/AH+AAA/wB/gAAH+AfwAAA/gP8AAAP8D+AAAB/B/AAAAf4fwAAAD+P4AAAA/z+AAAAH9/AAAAB//wAAAAP/4AAAAB/+AAAAAf/AAAAAD/gAAAAA/4AAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAA=',
+  Z: 'AD///+AAA////gAAP///4AAD///+AAA////gAAH///4AAAAAP8AAAAAH+AAAAAD/gAAAAB/wAAAAAf4AAAAAP8AAAAAH+AAAAAD/gAAAAB/wAAAAAf4AAAAAP8AAAAAH/AAAAAD/gAAAAB/wAAAAAf4AAAAAP8AAAAAH+AAAAAD/gAAAAB/wAAAAAf4AAAAAP///4AAD///+AAA////gAAP///4AAD///+AAA////gA=',
+} };
+
+// Decode templates into binary masks + distance transforms (once)
+const GLYPH_TEMPLATE_MASKS = {};
+const GLYPH_TEMPLATE_DT = {};
+(function initGlyphTemplates() {
+  const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
+  for (const ch of GLYPH_TEMPLATES.chars) {
+    const b64 = GLYPH_TEMPLATES.data[ch];
+    const bin = atob(b64);
+    const mask = new Uint8Array(H * W);
+    for (let i = 0; i < H * W; i++) {
+      const byte = bin.charCodeAt(i >> 3);
+      mask[i] = (byte >> (7 - (i & 7))) & 1;
+    }
+    GLYPH_TEMPLATE_MASKS[ch] = mask;
+    GLYPH_TEMPLATE_DT[ch] = edt(mask);
+  }
+})();
+
+// Euclidean distance transform (Felzenszwalb-Huttenlocher), flat output
+function edt(binary) {
+  const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
+  const INF = 1e9;
+  const f = new Float64Array(H * W);
+  for (let i = 0; i < H * W; i++) f[i] = binary[i] ? 0 : INF;
+  for (let j = 0; j < W; j++) {
+    const v = [], z = new Array(H + 1), d = new Array(H + 1);
+    for (let i = 0; i < H; i++) v.push(f[i * W + j]);
+    let k = 0;
+    z[0] = -INF; z[1] = INF; d[0] = 0;
+    for (let q = 1; q < H; q++) {
+      let s = ((v[q] + q * q) - (v[d[k]] + d[k] * d[k])) / (2 * q - 2 * d[k]);
+      while (s <= z[k]) { k--; s = ((v[q] + q * q) - (v[d[k]] + d[k] * d[k])) / (2 * q - 2 * d[k]); }
+      k++; d[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < H; q++) {
+      while (z[k + 1] < q) k++;
+      f[q * W + j] = (q - d[k]) * (q - d[k]) + v[d[k]];
+    }
+  }
+  for (let i = 0; i < H; i++) {
+    const v = [], z = new Array(W + 1), d = new Array(W + 1);
+    for (let j = 0; j < W; j++) v.push(f[i * W + j]);
+    let k = 0;
+    z[0] = -INF; z[1] = INF; d[0] = 0;
+    for (let q = 1; q < W; q++) {
+      let s = ((v[q] + q * q) - (v[d[k]] + d[k] * d[k])) / (2 * q - 2 * d[k]);
+      while (s <= z[k]) { k--; s = ((v[q] + q * q) - (v[d[k]] + d[k] * d[k])) / (2 * q - 2 * d[k]); }
+      k++; d[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < W; q++) {
+      while (z[k + 1] < q) k++;
+      f[i * W + q] = (q - d[k]) * (q - d[k]) + v[d[k]];
+    }
+  }
+  return f;
+}
+
+// Extract the letter glyph (largest white connected component) from a tile
+function extractGlyphMask(imageData, width, x1, y1, x2, y2) {
+  const m = 0.06;
+  const sx1 = Math.round(x1 + (x2 - x1) * m), sy1 = Math.round(y1 + (y2 - y1) * m);
+  const sx2 = Math.round(x1 + (x2 - x1) * (1 - m)), sy2 = Math.round(y1 + (y2 - y1) * (1 - m));
+  const gw = sx2 - sx1, gh = sy2 - sy1;
+  if (gw <= 0 || gh <= 0) return null;
+  const white = new Uint8Array(gw * gh);
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      const idx = ((sy1 + y) * width + (sx1 + x)) * 4;
+      if (imageData[idx] > 200 && imageData[idx+1] > 200 && imageData[idx+2] > 200) white[y * gw + x] = 1;
+    }
+  }
+  // connected components (4-connectivity), keep the largest (the letter)
+  const seen = new Uint8Array(gw * gh);
+  let best = null, bestSize = 0;
+  for (let i = 0; i < gw * gh; i++) {
+    if (!white[i] || seen[i]) continue;
+    const q = [i]; seen[i] = 1;
+    let minX = i % gw, maxX = i % gw, minY = (i / gw) | 0, maxY = (i / gw) | 0, size = 0;
+    while (q.length) {
+      const p = q.pop();
+      const px = p % gw, py = (p / gw) | 0;
+      size++;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nx = px + dx, ny = py + dy;
+        if (nx < 0 || nx >= gw || ny < 0 || ny >= gh) continue;
+        const np = ny * gw + nx;
+        if (white[np] && !seen[np]) { seen[np] = 1; q.push(np); }
+      }
+    }
+    if (size > bestSize) { bestSize = size; best = { minX, maxX, minY, maxY }; }
+  }
+  if (!best || bestSize < 20) return null;
+  const mw = best.maxX - best.minX + 1, mh = best.maxY - best.minY + 1;
+  const mask = new Uint8Array(mw * mh);
+  for (let y = 0; y < mh; y++)
+    for (let x = 0; x < mw; x++)
+      mask[y * mw + x] = white[(best.minY + y) * gw + (best.minX + x)];
+  return { mask, w: mw, h: mh };
+}
+
+function resizeBilinear(mask, w, h, nw, nh) {
+  const out = new Uint8Array(nw * nh);
+  for (let y = 0; y < nh; y++) {
+    const sy = (y + 0.5) * h / nh - 0.5;
+    const y0 = Math.max(0, Math.floor(sy)), y1 = Math.min(h - 1, y0 + 1), fy = sy - y0;
+    for (let x = 0; x < nw; x++) {
+      const sx = (x + 0.5) * w / nw - 0.5;
+      const x0 = Math.max(0, Math.floor(sx)), x1 = Math.min(w - 1, x0 + 1), fx = sx - x0;
+      const v = (1-fy)*(1-fx)*mask[y0*w+x0] + (1-fy)*fx*mask[y0*w+x1] + fy*(1-fx)*mask[y1*w+x0] + fy*fx*mask[y1*w+x1];
+      out[y * nw + x] = v > 0.5 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// Normalize a glyph: bilinear resize to height H preserving aspect, center by COM
+function normalizeGlyph(mask, w, h) {
+  const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
+  const scale = H / h;
+  const nh = H;
+  const nw = Math.max(1, Math.round(w * scale));
+  const g2 = resizeBilinear(mask, w, h, nw, nh);
+  const canvas = new Uint8Array(H * W);
+  let cx = 0, cy = 0, n = 0;
+  for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) if (g2[y * nw + x]) { cx += x; cy += y; n++; }
+  if (n === 0) return canvas;
+  cx = cx / n; cy = cy / n;
+  const ox = Math.round(W / 2 - cx), oy = Math.round(H / 2 - cy);
+  for (let y = 0; y < nh; y++) {
+    for (let x = 0; x < nw; x++) {
+      if (!g2[y * nw + x]) continue;
+      const px = x + ox, py = y + oy;
+      if (px >= 0 && px < W && py >= 0 && py < H) canvas[py * W + px] = 1;
+    }
+  }
+  return canvas;
+}
+
+function chamferDistance(a, dtA, b, dtB) {
+  const H = GLYPH_TEMPLATES.H, W = GLYPH_TEMPLATES.W;
+  let ca = 0, na = 0, cb = 0, nb = 0;
+  for (let i = 0; i < H * W; i++) {
+    if (b[i]) { ca += Math.sqrt(dtA[i]); na++; }
+    if (a[i]) { cb += Math.sqrt(dtB[i]); nb++; }
+  }
+  if (na === 0 || nb === 0) return Infinity;
+  return (ca / na + cb / nb) / 2;
+}
+
+// Match a normalized glyph against all templates; returns the best letter
+function matchLetter(norm) {
+  const dtA = edt(norm);
+  let best = null, bestD = Infinity;
+  for (const ch of GLYPH_TEMPLATES.chars) {
+    const d = chamferDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
+    if (d < bestD) { bestD = d; best = ch; }
+  }
+  return best;
+}
+
+// Read a tile's letter from the raw image data; returns a letter or null
+function readTileLetter(imageData, width, x1, y1, x2, y2) {
+  const g = extractGlyphMask(imageData, width, x1, y1, x2, y2);
+  if (!g) return null;
+  const norm = normalizeGlyph(g.mask, g.w, g.h);
+  return matchLetter(norm);
+}
+
 function detectBoardGridPrior(imageData, width, height) {
   // Original heuristic fallback: width prior + anchor to expectedBoardTop.
   // Kept as a safety net when premium anchors can't be found.
@@ -751,63 +961,30 @@ async function analyzeHybrid(imageSource) {
   // Debug: show mosaic
   document.getElementById('debugMosaicImg').src = mosaicDataUrl;
 
-  // Build position list for prompt
   const boardPosLabels = tilePositions.map(t => `${t.row + 1}${String.fromCharCode(65 + t.col)}`);
   const rackPosLabels = rackTileBoxes.map((_, i) => `R${i + 1}`);
-  const allLabels = [...boardPosLabels, ...rackPosLabels];
 
   debugLog += `Rack tiles detected: ${rackTileBoxes.length}\n`;
-  setStatus(`Sending ${allLabels.length} tile mosaic to GPT-4o for letter recognition...`, 'loading');
+  setStatus(`Reading ${tilePositions.length + rackTileBoxes.length} tile letters (deterministic OCR)...`, 'loading');
 
-  const key = getKey();
-  if (!key) { setStatus('API key required for letter recognition.', 'error'); return null; }
-
-  const model = document.getElementById('modelSelect').value;
-
-  const positionsList = allLabels.join(', ');
-  const letterPrompt = `This image shows ${allLabels.length} Scrabble tiles in a grid. Each tile has a YELLOW LABEL above it and a BLUE TILE below it. Each blue tile has exactly ONE large WHITE LETTER in the center.
-
-The tiles in order are: ${positionsList}
-
-Read the single large white letter on each blue tile. Ignore any small markings — focus ONLY on the main letter.
-
-Output a JSON object mapping each label to its letter (A-Z uppercase).
-Example: {"4G": "V", "5H": "M", "R1": "W"}`;
-
-  const body = {
-    model,
-    max_tokens: 2048,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: 'You read letters from individual Scrabble tile images. Output only JSON.' },
-      {
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: mosaicDataUrl } },
-          { type: 'text', text: letterPrompt }
-        ]
-      }
-    ]
-  };
-
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-    body: JSON.stringify(body)
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
+  // Step 6b: Deterministic letter OCR — template matching, no API key.
+  // Read each board tile's letter, then each rack tile's letter.
+  const letterMap = {};
+  let unrecognized = 0;
+  for (const tp of tilePositions) {
+    const label = `${tp.row + 1}${String.fromCharCode(65 + tp.col)}`;
+    const letter = readTileLetter(pixels, w, tp.x1, tp.y1, tp.x2, tp.y2);
+    letterMap[label] = letter || '?';
+    if (!letter) unrecognized++;
+  }
+  for (let i = 0; i < rackTileBoxes.length; i++) {
+    const box = rackTileBoxes[i];
+    const letter = readTileLetter(pixels, w, box.x1, box.y1, box.x2, box.y2);
+    letterMap[`R${i + 1}`] = letter || '?';
+    if (!letter) unrecognized++;
   }
 
-  const data = await resp.json();
-  const rawContent = data.choices[0].message.content;
-  console.log('Raw API response:', rawContent);
-  const letterMap = JSON.parse(rawContent);
-  console.log('Letter map from API:', letterMap);
-
-  debugLog += `API response: ${rawContent}\n`;
+  debugLog += `Deterministic OCR: ${tilePositions.length + rackTileBoxes.length} tiles read, ${unrecognized} unrecognized.\n`;
   document.getElementById('debugLog').textContent = debugLog;
 
   // Step 7: Assemble grid

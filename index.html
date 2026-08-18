@@ -69,6 +69,14 @@
     <button id="analyzeBtn" onclick="analyze()">Analyze Board</button>
   </div>
 
+  <div class="score-row">
+    <label>Your Score:</label>
+    <input type="number" id="playerScoreInput" value="0" min="0" style="width:70px;" />
+    <label>Opponent Score:</label>
+    <input type="number" id="opponentScoreInput" value="0" min="0" style="width:70px;" />
+    <span style="font-size:0.75rem;color:#555;">(manual for now — header score OCR is a TODO)</span>
+  </div>
+
   <div class="drop-zone" id="dropZone">
     Or drag & drop / paste (Ctrl+V) a screenshot here
   </div>
@@ -298,7 +306,7 @@ function medianOf(arr) {
 // against 26 pre-rendered A-Z templates using Chamfer distance (Euclidean
 // distance transform). Fully deterministic and offline.
 
-const GLYPH_TEMPLATES = { H: 32, W: 44, chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', data: {
+const GLYPH_TEMPLATES = { H: 32, W: 44, chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', data: {
   A: 'AAA/4AAAAAP+AAAAAD/gAAAAB/8AAAAAf/AAAAAH/4AAAAD/+AAAAA//gAAAAf38AAAAH9/AAAAB/fwAAAA/j+AAAAP4/gAAAD8P4AAAB/B/AAAAfwfwAAAP4H+AAAD+A/gAAA/gP4AAAf4D/AAAH///wAAB///8AAA////gAAP///4AAD///+AAB/gA/wAAfwAH8AAP8AB/gAD/AAf4AA/gAD+AAf4AA/wAAAAAAAA=',
   B: 'AD///AAAA///8AAAP///wAAD///8AAA////gAAP///8AAD+AD/AAA/gAfwAAP4AH8AAD+AB/AAA/gAfwAAP4AP4AAD+AP+AAA////AAAP///gAAD///8AAA////gAAP///8AAD+AD/AAA/gAf4AAP4AD+AAD+AA/gAA/gAP4AAP4AD+AAD+AB/gAA/gA/4AAP///8AAD///+AAA////gAAP///wAAD///wAAA///wAA=',
   C: 'AAAP+AAAAAf/4AAAAP//gAAAH//8AAAD///gAAB/5/4AAA/4D/AAAP4AfwAAH+AD+AAB/AA/gAAfwAH4AAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAB/AA/gAAfwAP4AAH+AH8AAA/wB/AAAP+B/gAAB///4AAAf//8AAAD//+AAAAP//AAAAB//gAAAAD/gAA=',
@@ -325,7 +333,21 @@ const GLYPH_TEMPLATES = { H: 32, W: 44, chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', dat
   X: 'AH+AD+AAB/gB/gAAP8A/wAAD/AP8AAAf4H+AAAD+B/AAAA/w/wAAAH+P4AAAA/n8AAAAP9/AAAAB//gAAAAf/4AAAAD/8AAAAAf+AAAAAH/gAAAAA/wAAAAAP+AAAAAH/gAAAAD/8AAAAA//gAAAAf/4AAAAP//AAAAD+fwAAAB/n+AAAAfw/wAAAP8P8AAAH+B/gAAB/AP8AAA/wD/AAAf4Af4AAH+AH+AAD/AA/wA=',
   Y: 'AAAAAAAAAAAAAAAAAAAAAAAP8AB/gAB/gA/wAAf4AP8AAD/AH+AAA/wB/gAAH+AfwAAA/gP8AAAP8D+AAAB/B/AAAAf4fwAAAD+P4AAAA/z+AAAAH9/AAAAB//wAAAAP/4AAAAB/+AAAAAf/AAAAAD/gAAAAA/4AAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAA=',
   Z: 'AD///+AAA////gAAP///4AAD///+AAA////gAAH///4AAAAAP8AAAAAH+AAAAAD/gAAAAB/wAAAAAf4AAAAAP8AAAAAH+AAAAAD/gAAAAB/wAAAAAf4AAAAAP8AAAAAH/AAAAAD/gAAAAB/wAAAAAf4AAAAAP8AAAAAH+AAAAAD/gAAAAB/wAAAAAf4AAAAAP///4AAD///+AAA////gAAP///4AAD///+AAA////gA=',
+  0: 'AAA/4AAAAA//gAAAAf/8AAAAH//AAAAD//4AAAA/j+AAAAfwfwAAAH4D8AAAD+A/gAAA/gP4AAAP4D+AAAD8AfgAAA/AH4AAAPwB+AAAD8AfgAAA/AH4AAAPwB+AAAD8AfgAAA/AH4AAAPwB+AAAD8A/gAAA/gP4AAAP4D+AAAD+A/gAAAfgPwAAAH8H8AAAA/j+AAAAP//gAAAB//wAAAAf/8AAAAD/+AAAAAP+AAA=',
+  1: 'AAAAAAAAAAB+AAAAAAfgAAAAAH4AAAAAD+AAAAAB/gAAAAH/4AAAAH/+AAAAB//gAAAAf/4AAAAH/+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAA=',
+  2: 'AAA/wAAAAA//AAAAA//8AAAAf//gAAAH//4AAAD/n/AAAA/gfwAAAPwD+AAAH8A/gAAB/AP4AAAfwD+AAAAAA/gAAAAAP4AAAAAH+AAAAAD/AAAAAB/wAAAAA/4AAAAAf8AAAAAf+AAAAAP/AAAAAH/AAAAAD/gAAAAB/gAAAAA/wAAAAAf4AAAAAP8AAAAAD///gAAA///4AAAf//+AAAH///gAAB///4AAAf//+AA=',
+  3: 'AAB/gAAAAB/+AAAAA//4AAAAf//AAAAH//wAAAD/H+AAAA/A/gAAAPwH4AAAD4B+AAAA+AfgAAAAAH4AAAAAD+AAAAAB/AAAAAH/gAAAAB/wAAAAAf+AAAAAH/wAAAAB/+AAAAAB/gAAAAAH8AAAAAB/AAAB+APwAAAfgH8AAAH4A/AAAB/AfwAAAPwH8AAAD/H+AAAA///gAAAH//wAAAA//4AAAAH/8AAAAAf8AAA=',
+  4: 'AAAD+AAAAAB/gAAAAA/4AAAAAP+AAAAAH/gAAAAD/4AAAAA/+AAAAAffgAAAAH34AAAAD5+AAAAA+fgAAAAfH4AAAAPh+AAAAD4fgAAAB8H4AAAA/B+AAAAPgfgAAAH4H4AAAB8B+AAAA+AfgAAAP///gAAD///4AAA///+AAAP///gAAD///4AAAAAfgAAAAAH4AAAAAB+AAAAAAfgAAAAAH4AAAAAB+AAAAAAfgAA=',
+  5: 'AAAAAAAAAD//8AAAA///AAAAP//wAAAD//8AAAB///AAAAPgAAAAAH4AAAAAB+AAAAAAfAAAAAAHwAAAAAB8eAAAAAff8AAAAP//gAAAD//+AAAA///gAAAP//8AAAD+D/gAAA/Af4AAAAAD+AAAAAA/gAAAAAP4AAAAAD+AAAAAA/gAAB/AP4AAAfwD+AAAH+B/AAAA/x/wAAAP//4AAAB//8AAAAP/+AAAAB//AAA=',
+  6: 'AAAf4AAAAAf/gAAAAP/8AAAAH//gAAAD//4AAAA/j/AAAAfwfwAAAH4D8AAAB+AAAAAA/gAAAAAPwAAAAAD8fAAAAA/f+AAAAP//wAAAD//+AAAA///gAAAP+P8AAAD+B/AAAA/gP4AAAPwD+AAAD8AfgAAA/AP4AAAPwB+AAAD8A/gAAAfgP4AAAH4H8AAAA/j/AAAAP//gAAAB//4AAAAP/8AAAAB/+AAAAAH8AAA=',
+  7: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAf///AAAH///wAAB///8AAAf///AAAH///wAAB///8AAAAAD+AAAAAA/AAAAAAfgAAAAAP4AAAAAH8AAAAAB+AAAAAA/gAAAAAfwAAAAAH4AAAAAD+AAAAAA/AAAAAAfwAAAAAH8AAAAAD+AAAAAA/gAAAAAPwAAAAAH8AAAAAB/AAAAAAfwAAAAAP4AAAAAD+AAAAAA/gAAA=',
+  8: 'AAAf8AAAAAf/gAAAAf/+AAAAH//wAAAD//8AAAB/h/gAAAfwP4AAAH4B+AAAB+AfgAAAfgH4AAAH8B+AAAA/g/AAAAP//wAAAB//4AAAAP/8AAAAH//gAAAD//8AAAB/z/gAAAfwP4AAAP4B/AAAD+AfwAAA/gD8AAAP4A/AAAD+AfwAAA/gH8AAAP8D/AAAB/z/gAAAf//4AAAD//8AAAAf/+AAAAD//AAAAAP/AAA=',
+  9: 'AAAAAAAAAAP8AAAAAP/wAAAAP/+AAAAD//wAAAB//+AAAA/5/gAAAP4H8AAAD8A/AAAB/APwAAAfwD8AAAH8A/gAAB/AP4AAAfwD+AAAH8A/gAAA/gf4AAAP8P+AAAD///gAAAf//4AAAD//+AAAAf/fgAAAB/P4AAAAAD8AAAAAA/AAAAAAPwAAAPwH8AAAD+B+AAAA/x/gAAAH//wAAAB//8AAAAP/8AAAAA/+AAA=',
 } };
+
+// Fixed Scrabble letter values (blanks are worth 0). Used to compute the
+// score from the board tiles deterministically.
+const LETTER_VALUES = { A:1, B:3, C:3, D:2, E:1, F:4, G:2, H:4, I:1, J:8, K:5, L:1, M:3, N:1, O:1, P:3, Q:10, R:1, S:1, T:1, U:1, V:4, W:4, X:8, Y:4, Z:10 };
 
 // Decode templates into binary masks + distance transforms (once)
 const GLYPH_TEMPLATE_MASKS = {};
@@ -480,11 +502,14 @@ function chamferDistance(a, dtA, b, dtB) {
   return (ca / na + cb / nb) / 2;
 }
 
-// Match a normalized glyph against all templates; returns the best letter
+// Match a normalized glyph against the A-Z letter templates only (the
+// GLYPH_TEMPLATES set also carries 0-9 for the future header score OCR, but
+// tile letters must only ever match A-Z).
+const LETTER_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 function matchLetter(norm) {
   const dtA = edt(norm);
   let best = null, bestD = Infinity;
-  for (const ch of GLYPH_TEMPLATES.chars) {
+  for (const ch of LETTER_CHARS) {
     const d = chamferDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
     if (d < bestD) { bestD = d; best = ch; }
   }
@@ -497,6 +522,127 @@ function readTileLetter(imageData, width, x1, y1, x2, y2) {
   if (!g) return null;
   const norm = normalizeGlyph(g.mask, g.w, g.h);
   return matchLetter(norm);
+}
+
+// Match a glyph mask against all templates (A-Z + 0-9); returns the best char.
+function matchGlyph(mask, w, h) {
+  const norm = normalizeGlyph(mask, w, h);
+  const dtA = edt(norm);
+  let best = null, bestD = Infinity;
+  for (const ch of GLYPH_TEMPLATES.chars) {
+    const d = chamferDistance(norm, dtA, GLYPH_TEMPLATE_MASKS[ch], GLYPH_TEMPLATE_DT[ch]);
+    if (d < bestD) { bestD = d; best = ch; }
+  }
+  return best;
+}
+
+// Extract connected components of dark pixels in a region (x0..x1, y0..y1).
+function extractDarkGlyphs(dark, width, x0, x1, y0, y1) {
+  const gw = x1 - x0, gh = y1 - y0;
+  if (gw <= 0 || gh <= 0) return [];
+  const seen = new Uint8Array(gw * gh);
+  const glyphs = [];
+  for (let i = 0; i < gw * gh; i++) {
+    const gx = i % gw, gy = (i / gw) | 0;
+    if (!dark[(y0 + gy) * width + (x0 + gx)] || seen[i]) continue;
+    const q = [i]; seen[i] = 1;
+    let minX = gx, maxX = gx, minY = gy, maxY = gy, size = 0;
+    while (q.length) {
+      const p = q.pop();
+      const px = p % gw, py = (p / gw) | 0;
+      size++;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nx = px + dx, ny = py + dy;
+        if (nx < 0 || nx >= gw || ny < 0 || ny >= gh) continue;
+        const np = ny * gw + nx;
+        if (!seen[np] && dark[(y0 + ny) * width + (x0 + nx)]) { seen[np] = 1; q.push(np); }
+      }
+    }
+    if (size > 40) {
+      const mw = maxX - minX + 1, mh = maxY - minY + 1;
+      const mask = new Uint8Array(mw * mh);
+      for (let yy = 0; yy < mh; yy++)
+        for (let xx = 0; xx < mw; xx++)
+          mask[yy * mw + xx] = dark[(y0 + minY + yy) * width + (x0 + minX + xx)] ? 1 : 0;
+      glyphs.push({ mask, w: mw, h: mh });
+    }
+  }
+  return glyphs;
+}
+
+// TODO(header-score-ocr): Deterministic header score OCR is not wired up yet.
+// Real digit templates (0-9, extracted from real Crossplay headers) work for
+// isolated digits, but touching digits (e.g. "10" in "108") and trailing UI
+// elements make full-score segmentation unreliable. Scores are entered
+// manually (playerScoreInput / opponentScoreInput) until this is solved.
+// The functions below (matchGlyph, extractDarkGlyphs, detectHeaderZero) are
+// the scaffolding for that future OCR.
+
+// Detect whether each side's header score is "0". The header has two stacked
+// text bands above the board (player name above, score below, on each side of
+// the central element). A score of "0" is a single "0" glyph in the score
+// band. Returns { playerZero, opponentZero }.
+function detectHeaderZero(imageData, width, height, gridTop) {
+  const result = { playerZero: false, opponentZero: false };
+  const top = Math.max(0, Math.floor(gridTop));
+  if (top < 40) return result;
+
+  // Dark text mask (same threshold as the premium-label mask)
+  const dark = new Uint8Array(width * height);
+  for (let y = 0; y < top; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const [h, s, v] = rgbToHsv(imageData[idx], imageData[idx+1], imageData[idx+2]);
+      if (v < 190 && s > 30) dark[y * width + x] = 1;
+    }
+  }
+
+  // Regions: left (player) and right (opponent), excluding the central element
+  const regions = { player: [150, 400], opponent: [800, 1150] };
+
+  // Row profile of the combined regions above the board
+  const rowProj = new Float32Array(top);
+  for (let y = 0; y < top; y++) {
+    let c = 0;
+    for (const [rx0, rx1] of Object.values(regions)) {
+      for (let x = rx0; x < rx1; x++) c += dark[y * width + x];
+    }
+    rowProj[y] = c;
+  }
+
+  // Find bands (contiguous rows with dark content)
+  const bands = [];
+  let start = -1;
+  for (let y = 0; y < top; y++) {
+    if (rowProj[y] > 8) {
+      if (start < 0) start = y;
+    } else if (start >= 0) {
+      if (y - start >= 10) bands.push([start, y - 1]);
+      start = -1;
+    }
+  }
+  if (start >= 0 && top - start >= 10) bands.push([start, top - 1]);
+  if (bands.length < 2) return result;
+
+  // The name/score pair is two adjacent bands where the upper band contains
+  // letter glyphs and the lower band contains digit glyphs. The score band is
+  // the lower one. Check each side for a single "0" glyph.
+  for (let i = 0; i < bands.length - 1; i++) {
+    const [y0a, y1a] = bands[i];
+    const [y0b, y1b] = bands[i + 1];
+    for (const [side, [rx0, rx1]] of Object.entries(regions)) {
+      const lower = extractDarkGlyphs(dark, width, rx0, rx1, y0b, y1b);
+      if (lower.length !== 1) continue;
+      const ch = matchGlyph(lower[0].mask, lower[0].w, lower[0].h);
+      if (ch === '0') {
+        if (side === 'player') result.playerZero = true;
+        else result.opponentZero = true;
+      }
+    }
+  }
+  return result;
 }
 
 function detectBoardGridPrior(imageData, width, height) {
@@ -981,6 +1127,10 @@ async function analyzeHybrid(imageSource) {
 
   const gridStrings = boardGrid.map(row => row.join(''));
 
+  // TODO: Deterministic header score OCR. Real digit templates (extracted from
+  // real Crossplay headers) work for isolated digits, but touching digits
+  // (e.g. "10" in "108") and trailing UI elements make full-score segmentation
+  // unreliable. Scores are entered manually for now.
   setStatus(`Hybrid parsing complete: ${tilePositions.length} tiles, ${missedTiles} unrecognized.`, 'done');
 
   return {
@@ -1014,6 +1164,9 @@ async function analyze() {
     }
 
     if (parsed) {
+      // Scores are entered manually (header score OCR is a TODO).
+      parsed.player_score = parseInt(document.getElementById('playerScoreInput').value) || 0;
+      parsed.opponent_score = parseInt(document.getElementById('opponentScoreInput').value) || 0;
       renderResult(parsed);
       return;
     }

@@ -10,15 +10,19 @@ Contributor guide for the Crossplay Board Analyzer — a fully offline, determin
 - `test_board.png`, `IMG_3046.png`, `IMG_3047.png`, `IMG_3048.png` — example screenshots used as test fixtures.
 - `test_grid_detection.py` — offline grid-detection test (passes).
 - `test_score_ocr.py` — header score-OCR regression test.
+- `test_browser_pipeline.py` — browser-level parsing and Quackle regression test.
 
 ## Build, Test, and Development Commands
 
 There is no build step — it is a static site.
 
 ```bash
+python3 -m pip install -r requirements-test.txt  # use Python 3.10 or newer
+python3 -m playwright install chromium
 python3 -m http.server 8000   # serve the app locally, then open http://localhost:8000
 python3 test_grid_detection.py  # grid/tile detection test (needs numpy, Pillow, scipy)
 python3 test_score_ocr.py       # header score OCR regression test
+python3 test_browser_pipeline.py  # real browser pipeline test (needs Playwright and Chromium)
 ```
 
 ## Coding Style & Naming Conventions
@@ -31,7 +35,7 @@ python3 test_score_ocr.py       # header score OCR regression test
 ## Testing Guidelines
 
 - Python tests live at the repo root (`test_*.py`) and run against the example screenshots.
-- The JS pipeline is validated with Node scripts that load the real images and assert 31/31 tiles and 31/31 letters.
+- The JavaScript pipeline test loads all four screenshots in Chromium and checks the exact board, rack, scores, words, and Quackle output.
 - New CV/OCR work should update or add a `test_*.py` so regressions are caught offline.
 - `test_score_ocr.py` is the pass/fail gate for header score OCR.
 

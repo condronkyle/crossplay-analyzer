@@ -109,6 +109,30 @@ FIXTURES = {
         "words": 35,
         "blanks": ["I2", "C14", "H15"],
     },
+    "IMG_150_139.png": {
+        "grid": [
+            "..........G....",
+            ".......A.NOUN.Y",
+            ".......L...TAME",
+            "......YEAH...E.",
+            ".........AB.YA.",
+            "......LOB.OWED.",
+            "..PROG..I.T.N.F",
+            "....D..JOGS...I",
+            "...LASSI.O..RUN",
+            ".......V.R..I..",
+            "...C...E..HIPS.",
+            "...A.BASE.A.E..",
+            "...R.O..D.V....",
+            "..RENT.LITER...",
+            ".....H..T......",
+        ],
+        "scores": ("150", "139"),
+        "rack": "IUAFTIO",
+        "tiles": "82",
+        "words": 34,
+        "blanks": ["J5", "K5", "M5"],
+    },
 }
 
 
@@ -194,6 +218,37 @@ class BrowserPipelineTest(unittest.TestCase):
 
                 if fixture == "IMG_3048.png":
                     self.assertTrue(page.locator("#kibitzBtn").evaluate("el => el.classList.contains('hidden')"))
+
+                if fixture == "IMG_150_139.png":
+                    parsed = page.evaluate("lastParsed")
+                    self.assertTrue(parsed["tile_values_complete"])
+                    internal_blanks = [f"{position[1:]}{position[0]}" for position in expected["blanks"]]
+                    self.assertEqual(parsed["blank_positions"], internal_blanks)
+                    parsed_grid = [list(row) for row in expected["grid"]]
+                    for position in expected["blanks"]:
+                        row = int(position[1:]) - 1
+                        col = ord(position[0]) - ord("A")
+                        parsed_grid[row][col] = parsed_grid[row][col].lower()
+                    self.assertEqual(parsed["grid"], ["".join(row) for row in parsed_grid])
+                    value = page.evaluate(
+                        """async fixtureUrl => {
+                          const response = await fetch(fixtureUrl);
+                          const bitmap = await createImageBitmap(await response.blob());
+                          const canvas = document.createElement('canvas');
+                          canvas.width = bitmap.width;
+                          canvas.height = bitmap.height;
+                          const context = canvas.getContext('2d');
+                          context.drawImage(bitmap, 0, 0);
+                          const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+                          const grid = detectBoardGrid(pixels.data, canvas.width, canvas.height);
+                          return readTileValue(
+                            pixels.data, canvas.width,
+                            grid.vGrid[7], grid.hGrid[7],
+                            grid.vGrid[8], grid.hGrid[8]);
+                        }""",
+                        f"{self.base_url}/{fixture}",
+                    )
+                    self.assertEqual(value, 10)
 
                 if fixture == "test_board.png":
                     page.evaluate(

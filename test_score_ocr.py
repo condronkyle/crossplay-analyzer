@@ -26,6 +26,7 @@ GROUND_TRUTH = {
     'IMG_3046.png':   ('43',  '93'),
     'IMG_3047.png':   ('235', '285'),
     'IMG_3048.png':   ('407', '412'),
+    'IMG_150_139.png': ('150', '139'),
 }
 
 # ── Score band / region geometry per image ────────────────────────────────
@@ -37,6 +38,7 @@ GEOMETRY = {
     'IMG_3046.png':   (334, 370, 141, 400, 801, 1143),
     'IMG_3047.png':   (334, 370, 141, 400, 801, 1143),
     'IMG_3048.png':   (679, 719, 220, 390, 800, 950),
+    'IMG_150_139.png': (122, 135, 66, 92, 382, 406),
 }
 
 # ── Known digit boundaries for template extraction: (image, digit, x0,x1,y0,y1)

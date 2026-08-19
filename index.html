@@ -504,9 +504,11 @@ function extractGlyphMask(imageData, width, x1, y1, x2, y2) {
       if (imageData[idx] > 200 && imageData[idx+1] > 200 && imageData[idx+2] > 200) white[y * gw + x] = 1;
     }
   }
-  // connected components (4-connectivity), keep the largest (the letter)
+  // Connected components (4-connectivity). Prefer the largest component that
+  // does not touch the crop edge, because a screen-edge tile can include a
+  // full-height white border with the same area as its letter.
   const seen = new Uint8Array(gw * gh);
-  let best = null, bestSize = 0;
+  let best = null, bestSize = 0, fallback = null, fallbackSize = 0;
   for (let i = 0; i < gw * gh; i++) {
     if (!white[i] || seen[i]) continue;
     const q = [i]; seen[i] = 1;
@@ -524,8 +526,14 @@ function extractGlyphMask(imageData, width, x1, y1, x2, y2) {
         if (white[np] && !seen[np]) { seen[np] = 1; q.push(np); }
       }
     }
-    if (size > bestSize) { bestSize = size; best = { minX, maxX, minY, maxY }; }
+    const component = { minX, maxX, minY, maxY };
+    if (size > fallbackSize) { fallbackSize = size; fallback = component; }
+    const touchesEdge = minX === 0 || maxX === gw - 1 || minY === 0 || maxY === gh - 1;
+    if (!touchesEdge && size > bestSize) { bestSize = size; best = component; }
   }
+  // A real main glyph can touch the crop at this resolution. Use the interior
+  // component only when it is large enough to be the letter, not a superscript.
+  if (!best || bestSize < fallbackSize * 0.5) { best = fallback; bestSize = fallbackSize; }
   if (!best || bestSize < 20) return null;
   const mw = best.maxX - best.minX + 1, mh = best.maxY - best.minY + 1;
   const mask = new Uint8Array(mw * mh);
@@ -712,6 +720,8 @@ function readTileValue(imageData, width, x1, y1, x2, y2) {
 
   const seen = new Uint8Array(regionW * regionH);
   const glyphs = [];
+  let geometryValidComponents = 0;
+  const distanceLimit = cellH < 40 ? 0.70 : 0.40;
   for (let i = 0; i < regionW * regionH; i++) {
     if (!white[i] || seen[i]) continue;
     const queue = [i];
@@ -736,6 +746,7 @@ function readTileValue(imageData, width, x1, y1, x2, y2) {
     if (size < 3 || minY > cellH * 0.22 ||
         glyphH < cellH * 0.08 || glyphH > cellH * 0.32 ||
         glyphW > cellW * 0.22) continue;
+    geometryValidComponents++;
     const mask = new Uint8Array(glyphW * glyphH);
     for (let y = 0; y < glyphH; y++) {
       for (let x = 0; x < glyphW; x++) {
@@ -743,11 +754,13 @@ function readTileValue(imageData, width, x1, y1, x2, y2) {
       }
     }
     const hit = matchGlyphDetailed(mask, glyphW, glyphH);
-    if (hit.distance < 0.40) glyphs.push({ x: minX, ch: hit.ch });
+    if (hit.distance < distanceLimit) glyphs.push({ x: minX, ch: hit.ch });
   }
 
   glyphs.sort((a, b) => a.x - b.x);
   const text = glyphs.map(glyph => glyph.ch).join('');
+  // Never turn a partially decoded multi-digit value such as 10 into a blank.
+  if (text === '0' && geometryValidComponents !== 1) return null;
   return /^(?:0|[1-9]|10)$/.test(text) ? parseInt(text, 10) : null;
 }
 
@@ -887,7 +900,7 @@ function findHeaderScoreBand(imageData, width, height, gridTop, projection = nul
     const gap = bands[i + 1][0] - bands[i][1] - 1;
     const upperH = bands[i][1] - bands[i][0] + 1;
     const lowerH = bands[i + 1][1] - bands[i + 1][0] + 1;
-    if (gap >= 3 && gap <= 45 &&
+    if (gap >= 1 && gap <= 45 &&
         upperH >= minBandHeight && upperH <= maxBandHeight &&
         lowerH >= minBandHeight && lowerH <= maxBandHeight) {
       return cropHeaderScoreBand(bands[i], top, width, maxBandHeight);
@@ -1004,10 +1017,8 @@ function readHeaderScores(imageData, width, height, gridTop) {
       /^\d{1,3}$/.test(decoded.player.text) && /^\d{1,3}$/.test(decoded.opponent.text);
     if (i === 0) {
       preferredResult = decoded;
-      if (isComplete) {
-        return { player: decoded.player.text, opponent: decoded.opponent.text };
-      }
-    } else if (isComplete) {
+    }
+    if (isComplete) {
       complete.push({
         decoded,
         averageDistance: (decoded.player.averageDistance + decoded.opponent.averageDistance) / 2

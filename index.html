@@ -39,6 +39,11 @@
   .tile-pool-list { display: flex; gap: 6px; flex-wrap: wrap; }
   .tile-chip { background: #25375b; border: 1px solid #40547c; border-radius: 4px; color: #fff; font-family: 'Courier New', monospace; font-weight: 700; padding: 3px 7px; }
   .tile-pool-note { color: #777; font-size: 0.75rem; margin-top: 8px; }
+  .final-turn-panel { background: #16213e; border: 1px solid #8e44ad; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+  .final-turn-panel fieldset { border: 0; }
+  .final-turn-panel legend { color: #fff; font-weight: 700; margin-bottom: 8px; }
+  .final-turn-panel label { display: block; color: #ccc; font-size: 0.85rem; margin: 7px 0; cursor: pointer; }
+  .final-turn-panel input { margin-right: 7px; }
   .words-wrap h3 { font-size: 1rem; margin-bottom: 8px; color: #fff; }
   .word-list { max-height: 500px; overflow-y: auto; }
   .word-list table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -96,6 +101,15 @@
     <div class="tile-pool-summary" id="tilePoolSummary"></div>
     <div class="tile-pool-list" id="unseenTiles"></div>
     <div class="tile-pool-note">Unseen tiles include the hidden computer rack and the bag.</div>
+  </div>
+
+  <div class="final-turn-panel hidden" id="finalTurnPanel">
+    <fieldset>
+      <legend>Crossplay final-turn state</legend>
+      <label><input type="radio" name="finalTurnState" value="2">The computer emptied the bag on its last move — 2 final turns remain</label>
+      <label><input type="radio" name="finalTurnState" value="1">The bag was already empty before the computer's last move — 1 final turn remains</label>
+      <p class="tile-pool-note">A screenshot cannot show which final turn is next. Select the state before running Quackle.</p>
+    </fieldset>
   </div>
 
   <div class="content hidden" id="contentRow">
@@ -1948,13 +1962,28 @@ function renderResult(parsed) {
   document.getElementById('contentRow').classList.remove('hidden');
 
   document.getElementById('kibitzBtn').classList.add('hidden');
+  document.getElementById('kibitzBtn').disabled = false;
+  document.getElementById('finalTurnPanel').classList.add('hidden');
+  for (const input of document.querySelectorAll('input[name="finalTurnState"]')) input.checked = false;
+  selectedFinalTurns = null;
   lastParsed = null;
   if (parsed.tile_values_complete === false) {
     document.getElementById('engineStatus').textContent =
       'Tile values are incomplete. Quackle is disabled to avoid incorrect blank usage.';
-  } else if (/^[A-Z?]{1,7}$/.test(parsed.rack || '')) {
+  } else if (/^[A-Z?]{1,7}$/.test(parsed.rack || '') && Number.isInteger(parsed.bag_count)) {
     document.getElementById('kibitzBtn').classList.remove('hidden');
     lastParsed = parsed;
+    if (parsed.bag_count === 0) {
+      document.getElementById('finalTurnPanel').classList.remove('hidden');
+      document.getElementById('kibitzBtn').disabled = true;
+      document.getElementById('engineStatus').textContent =
+        'Choose the Crossplay final-turn state before running Quackle.';
+    } else {
+      selectedFinalTurns = 0;
+    }
+  } else if (/^[A-Z?]{1,7}$/.test(parsed.rack || '')) {
+    document.getElementById('engineStatus').textContent =
+      'The tile bag count is missing. Quackle is disabled to avoid an invalid game state.';
   }
 }
 
@@ -1962,6 +1991,8 @@ function renderResult(parsed) {
 const QUACKLE_MOVE_COUNT = 15;
 const QUACKLE_SIMULATION_PLIES = 2;
 const QUACKLE_SIMULATION_ITERATIONS = 50;
+// Candidate plus two future moves can draw at most three full racks.
+const QUACKLE_TERMINAL_BAG_LIMIT = 21;
 let quackleWorker = null;
 let quackleReady = false;
 let quackleBusy = false;
@@ -1969,6 +2000,17 @@ let quackleRequestId = 0;
 let quackleRunToken = 0;
 const quackleRequests = new Map();
 let lastParsed = null;
+let selectedFinalTurns = null;
+
+for (const input of document.querySelectorAll('input[name="finalTurnState"]')) {
+  input.addEventListener('change', event => {
+    selectedFinalTurns = Number.parseInt(event.target.value, 10);
+    const button = document.getElementById('kibitzBtn');
+    button.disabled = false;
+    document.getElementById('engineStatus').textContent =
+      `${selectedFinalTurns} Crossplay final ${selectedFinalTurns === 1 ? 'turn remains' : 'turns remain'}.`;
+  });
+}
 
 function resetQuackleWorker(reason = 'Quackle worker stopped') {
   if (quackleWorker) quackleWorker.terminate();
@@ -2068,16 +2110,27 @@ async function findBestMoves() {
   btn.textContent = 'Loading engine...';
 
   try {
-    const ready = await loadQuackleEngine();
-    if (!ready || runToken !== quackleRunToken) return;
-
     if (!lastParsed || !lastParsed.grid) {
       statusEl.textContent = 'No board data. Analyze a board first.';
       return;
     }
+    const bagCount = lastParsed.bag_count;
+    const finalTurnsRemaining = bagCount === 0 ? selectedFinalTurns : 0;
+    if (!Number.isInteger(bagCount) || bagCount < 0) {
+      throw new Error('The tile bag count is required');
+    }
+    if (bagCount === 0 && finalTurnsRemaining !== 1 && finalTurnsRemaining !== 2) {
+      throw new Error('Choose whether one or two Crossplay final turns remain');
+    }
 
-    btn.textContent = `Simulating ${iterationLabel}...`;
-    statusEl.textContent = `Generating moves and running ${iterationLabel}...`;
+    const ready = await loadQuackleEngine();
+    if (!ready || runToken !== quackleRunToken) return;
+
+    const expectsTerminal = bagCount <= QUACKLE_TERMINAL_BAG_LIMIT;
+    btn.textContent = expectsTerminal ? `Playing ${iterationLabel} to the finish...` : `Simulating ${iterationLabel}...`;
+    statusEl.textContent = expectsTerminal
+      ? `Generating moves and playing ${iterationLabel} per move to the Crossplay finish...`
+      : `Generating moves and running ${iterationLabel}...`;
     const movesContainer = document.getElementById('movesContainer');
     movesContainer.classList.add('hidden');
     movesContainer.innerHTML = '';
@@ -2085,7 +2138,9 @@ async function findBestMoves() {
     const startedAt = performance.now();
     statusTimer = setInterval(() => {
       const elapsed = Math.floor((performance.now() - startedAt) / 1000);
-      statusEl.textContent = `Generating moves and running ${iterationLabel}... ${elapsed}s`;
+      statusEl.textContent = expectsTerminal
+        ? `Generating moves and playing ${iterationLabel} per move to the Crossplay finish... ${elapsed}s`
+        : `Generating moves and running ${iterationLabel}... ${elapsed}s`;
     }, 1000);
 
     const result = await callQuackleWorker('simulateKibitz', {
@@ -2095,6 +2150,8 @@ async function findBestMoves() {
       opponentScore: lastParsed.opponent_score || 0,
       numMoves: QUACKLE_MOVE_COUNT,
       iterations: QUACKLE_SIMULATION_ITERATIONS,
+      bagCount,
+      finalTurnsRemaining,
     });
 
     if (runToken !== quackleRunToken) return;
@@ -2102,10 +2159,16 @@ async function findBestMoves() {
     const moves = Array.isArray(result.moves) ? result.moves : [];
     const hasCompleteMoves = moves.length > 0 && moves.every(move =>
       move.samples === QUACKLE_SIMULATION_ITERATIONS &&
+      (!expectsTerminal || move.terminalSamples === QUACKLE_SIMULATION_ITERATIONS) &&
       Number.isFinite(move.win) && move.win >= 0 && move.win <= 1
     );
     if (result.simulated !== true ||
-        result.plies !== QUACKLE_SIMULATION_PLIES ||
+        result.plies !== (expectsTerminal ? -1 : QUACKLE_SIMULATION_PLIES) ||
+        result.playToEnd !== expectsTerminal ||
+        result.simulationMode !== (expectsTerminal ? 'play-to-end' : '2-ply') ||
+        result.winModel !== (expectsTerminal ? 'terminal' : 'bogowin') ||
+        result.bagCount !== bagCount ||
+        result.finalTurnsRemaining !== finalTurnsRemaining ||
         result.iterationsRequested !== QUACKLE_SIMULATION_ITERATIONS ||
         result.iterationsCompleted !== QUACKLE_SIMULATION_ITERATIONS ||
         result.candidateCount !== moves.length ||
@@ -2114,12 +2177,15 @@ async function findBestMoves() {
       throw new Error('Quackle returned incomplete simulation results');
     }
 
-    renderMoves(moves);
+    renderMoves(moves, result);
     const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
     const completedLabel = `${result.iterationsCompleted} ` +
       (result.iterationsCompleted === 1 ? 'round' : 'rounds');
-    statusEl.textContent = `Found ${moves.length} moves. Simulated ${completedLabel} per move ` +
-      `(${result.totalPlayaheads.toLocaleString()} playouts total) in ${elapsed}s.`;
+    statusEl.textContent = expectsTerminal
+      ? `Found ${moves.length} moves. Played ${completedLabel} per move to the official Crossplay finish ` +
+        `(${result.totalPlayaheads.toLocaleString()} playouts total) in ${elapsed}s.`
+      : `Found ${moves.length} moves. Simulated ${completedLabel} per move ` +
+        `(${result.totalPlayaheads.toLocaleString()} playouts total) in ${elapsed}s.`;
   } catch (e) {
     if (runToken === quackleRunToken) {
       statusEl.textContent = 'Error: ' + e.message;
@@ -2135,7 +2201,7 @@ async function findBestMoves() {
   }
 }
 
-function renderMoves(moves) {
+function renderMoves(moves, result) {
   const container = document.getElementById('movesContainer');
   container.classList.remove('hidden');
 
@@ -2153,8 +2219,12 @@ function renderMoves(moves) {
   }
 
   html += '</table></div>';
-  container.innerHTML = html + `<p class="hint">Estimated Win% is Quackle's two-ply ` +
-    `Bogowin estimate from ${QUACKLE_SIMULATION_ITERATIONS} samples per move.</p>`;
+  const hint = result && result.playToEnd
+    ? `Estimated Win% uses ${QUACKLE_SIMULATION_ITERATIONS} sampled hidden racks and draws per move. ` +
+      `Each sample follows the official Crossplay final-turn rules to the finish.`
+    : `Estimated Win% is Quackle's two-ply Bogowin estimate from ` +
+      `${QUACKLE_SIMULATION_ITERATIONS} samples per move.`;
+  container.innerHTML = html + `<p class="hint">${hint}</p>`;
 }
 </script>
 </body>

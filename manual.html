@@ -119,8 +119,16 @@
       <input type="text" id="rackInput" class="rack-input" maxlength="7" placeholder="ABCDEFG">
     </div>
     <div class="meta-group">
-      <label>Tiles Left</label>
-      <input type="number" id="tilesRemaining" class="narrow" value="100">
+      <label>Tiles in Bag</label>
+      <input type="number" id="tilesRemaining" class="narrow" value="86" min="0">
+    </div>
+    <div class="meta-group">
+      <label>Final Turns</label>
+      <select id="finalTurnsRemaining">
+        <option value="0">Not started</option>
+        <option value="2">2 remain</option>
+        <option value="1">1 remains</option>
+      </select>
     </div>
   </div>
 
@@ -450,6 +458,8 @@ function buildJSON() {
     player_name: document.getElementById('p1Name').value || 'You',
     opponent_name: document.getElementById('p2Name').value || 'Opponent',
     rack: document.getElementById('rackInput').value.toUpperCase(),
+    bag_count: parseInt(document.getElementById('tilesRemaining').value),
+    final_turns_remaining: parseInt(document.getElementById('finalTurnsRemaining').value),
     grid: grid
   };
 }
@@ -536,7 +546,8 @@ function loadSample() {
   document.getElementById('p1Score').value = '22';
   document.getElementById('p2Score').value = '10';
   document.getElementById('rackInput').value = 'AEINRST';
-  document.getElementById('tilesRemaining').value = '86';
+  document.getElementById('tilesRemaining').value = '75';
+  document.getElementById('finalTurnsRemaining').value = '0';
 
   for (let r = 0; r < 15; r++) {
     for (let c = 0; c < 15; c++) {
@@ -558,6 +569,7 @@ document.querySelectorAll('.meta-section input').forEach(inp => {
 const QUACKLE_MOVE_COUNT = 15;
 const QUACKLE_SIMULATION_PLIES = 2;
 const QUACKLE_SIMULATION_ITERATIONS = 50;
+const QUACKLE_TERMINAL_BAG_LIMIT = 21;
 let quackleWorker = null;
 let quackleReady = false;
 let quackleBusy = false;
@@ -679,6 +691,15 @@ async function findBestMoves() {
     if (!/^[A-Z?]{1,7}$/.test(data.rack)) {
       throw new Error('Enter a rack with 1 to 7 letters or blanks');
     }
+    if (!Number.isInteger(data.bag_count) || data.bag_count < 0) {
+      throw new Error('Enter the number of tiles in the bag');
+    }
+    if (data.bag_count > 0 && data.final_turns_remaining !== 0) {
+      throw new Error('Final turns cannot start while the bag has tiles');
+    }
+    if (data.bag_count === 0 && ![1, 2].includes(data.final_turns_remaining)) {
+      throw new Error('Choose whether one or two final turns remain');
+    }
 
     const container = document.getElementById('movesContainer');
     container.innerHTML = '';
@@ -698,6 +719,8 @@ async function findBestMoves() {
       opponentScore: data.opponent_score,
       numMoves: QUACKLE_MOVE_COUNT,
       iterations: QUACKLE_SIMULATION_ITERATIONS,
+      bagCount: data.bag_count,
+      finalTurnsRemaining: data.final_turns_remaining,
     });
 
     if (runToken !== quackleRunToken) return;
@@ -705,10 +728,18 @@ async function findBestMoves() {
     const moves = Array.isArray(result.moves) ? result.moves : [];
     const hasCompleteMoves = moves.length > 0 && moves.every(move =>
       move.samples === QUACKLE_SIMULATION_ITERATIONS &&
+      (data.bag_count > QUACKLE_TERMINAL_BAG_LIMIT ||
+        move.terminalSamples === QUACKLE_SIMULATION_ITERATIONS) &&
       Number.isFinite(move.win) && move.win >= 0 && move.win <= 1
     );
+    const expectsTerminal = data.bag_count <= QUACKLE_TERMINAL_BAG_LIMIT;
     if (result.simulated !== true ||
-        result.plies !== QUACKLE_SIMULATION_PLIES ||
+        result.plies !== (expectsTerminal ? -1 : QUACKLE_SIMULATION_PLIES) ||
+        result.playToEnd !== expectsTerminal ||
+        result.simulationMode !== (expectsTerminal ? 'play-to-end' : '2-ply') ||
+        result.winModel !== (expectsTerminal ? 'terminal' : 'bogowin') ||
+        result.bagCount !== data.bag_count ||
+        result.finalTurnsRemaining !== data.final_turns_remaining ||
         result.iterationsRequested !== QUACKLE_SIMULATION_ITERATIONS ||
         result.iterationsCompleted !== QUACKLE_SIMULATION_ITERATIONS ||
         result.candidateCount !== moves.length ||
@@ -727,7 +758,10 @@ async function findBestMoves() {
       const winPct = `${(m.win * 100).toFixed(1)}%`;
       html += `<tr><td style="padding:4px 8px;${style}"><b>${moveStr}</b></td><td style="padding:4px 8px;${style}">${m.score}</td><td style="padding:4px 8px;${style}">${m.leave||''}</td><td data-samples="${m.samples}" style="padding:4px 8px;${style}">${winPct}</td><td style="padding:4px 8px;${style}">${m.equity.toFixed(1)}</td></tr>`;
     }
-    html += `</table><p style="color:#777;font-size:0.75rem;margin-top:8px;">Estimated Win% is Quackle's two-ply Bogowin estimate from ${QUACKLE_SIMULATION_ITERATIONS} samples per move.</p>`;
+    const hint = result.playToEnd
+      ? `Estimated Win% follows the official Crossplay final-turn rules to the finish for each sampled hidden rack and draw.`
+      : `Estimated Win% is Quackle's two-ply Bogowin estimate from ${QUACKLE_SIMULATION_ITERATIONS} samples per move.`;
+    html += `</table><p style="color:#777;font-size:0.75rem;margin-top:8px;">${hint}</p>`;
     container.innerHTML = html;
     const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
     statusEl.textContent = `Found ${moves.length} moves. Simulated ${result.iterationsCompleted} rounds per move ` +

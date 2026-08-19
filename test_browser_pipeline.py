@@ -375,6 +375,7 @@ class BrowserPipelineTest(unittest.TestCase):
               grid: Array(15).fill('...............'), rack: 'A',
               player_score: 0, opponent_score: 0,
               player_name: 'You', opponent_name: 'Opponent',
+              bag_count: 92,
               tile_values_complete: true
             })"""
         )
@@ -400,7 +401,7 @@ class BrowserPipelineTest(unittest.TestCase):
               return callQuackleWorker('simulateKibitz', {
                 gridJson: JSON.stringify(Array(15).fill('...............')),
                 rack: 'HAT', playerScore: 0, opponentScore: 0,
-                numMoves: 15, iterations: 1
+                numMoves: 15, iterations: 1, bagCount: 90, finalTurnsRemaining: 0
               });
             }"""
         )
@@ -575,7 +576,7 @@ class BrowserPipelineTest(unittest.TestCase):
               return callQuackleWorker('simulateKibitz', {
                 gridJson: JSON.stringify(Array(15).fill('AAAAAAAAAAAAAAA')),
                 rack: 'A', playerScore: 0, opponentScore: 0,
-                numMoves: 15, iterations: 1
+                numMoves: 15, iterations: 1, bagCount: 0, finalTurnsRemaining: 2
               });
             }"""
         )
@@ -599,12 +600,16 @@ class BrowserPipelineTest(unittest.TestCase):
         result = page.evaluate(
             """async ({uppercaseGrid, lowercaseGrid}) => {
               if (!await loadQuackleEngine()) throw new Error('Engine did not load');
-              const run = grid => callQuackleWorker('simulateKibitz', {
+              const run = (grid, bagCount = 4) => callQuackleWorker('simulateKibitz', {
                 gridJson: JSON.stringify(grid), rack: 'IUAFTIO',
                 playerScore: 150, opponentScore: 139,
-                numMoves: 15, iterations: 1
+                numMoves: 15, iterations: 1, bagCount, finalTurnsRemaining: 0
               });
-              return {uppercase: await run(uppercaseGrid), lowercase: await run(lowercaseGrid)};
+              return {
+                uppercase: await run(uppercaseGrid),
+                lowercase: await run(lowercaseGrid),
+                inconsistentBag: await run(lowercaseGrid, 5)
+              };
             }""",
             {"uppercaseGrid": uppercase_grid, "lowercaseGrid": lowercase_grid},
         )
@@ -612,6 +617,140 @@ class BrowserPipelineTest(unittest.TestCase):
         self.assertTrue(result["lowercase"]["simulated"])
         self.assertEqual(result["lowercase"]["iterationsCompleted"], 1)
         self.assertTrue(all(move["samples"] == 1 for move in result["lowercase"]["moves"]))
+        self.assertIn("seven hidden opponent tiles", result["inconsistentBag"]["error"])
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_bag_empty_requires_explicit_final_turn_state(self):
+        page, page_errors, _ = self.open_page()
+        page.evaluate(
+            """renderResult({
+              grid: Array(15).fill('...............'), rack: 'A',
+              player_score: 10, opponent_score: 20,
+              player_name: 'You', opponent_name: 'Computer',
+              bag_count: 0, tile_values_complete: true
+            })"""
+        )
+
+        self.assertFalse(page.locator("#finalTurnPanel").evaluate("el => el.classList.contains('hidden')"))
+        self.assertFalse(page.locator("#kibitzBtn").evaluate("el => el.classList.contains('hidden')"))
+        self.assertTrue(page.locator("#kibitzBtn").is_disabled())
+        self.assertIn("Choose the Crossplay final-turn state", page.locator("#engineStatus").text_content())
+
+        page.locator("input[name='finalTurnState'][value='2']").check()
+        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+        self.assertEqual(page.evaluate("selectedFinalTurns"), 2)
+
+        page.evaluate(
+            """renderResult({
+              grid: Array(15).fill('...............'), rack: 'A',
+              player_score: 10, opponent_score: 20,
+              player_name: 'You', opponent_name: 'Computer',
+              bag_count: 10, tile_values_complete: true
+            })"""
+        )
+        self.assertTrue(page.locator("#finalTurnPanel").evaluate("el => el.classList.contains('hidden')"))
+        self.assertEqual(page.evaluate("selectedFinalTurns"), 0)
+        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_near_end_simulation_reaches_crossplay_finish(self):
+        page, page_errors, _ = self.open_page()
+        grid = [
+            "..........G....", ".......A.NOUN.Y", ".......L...TAME",
+            "......YEAH...E.", ".........ab.yA.", "......LOB.OWED.",
+            "..PROG..I.TEN.F", "....D..JOGS...I", "...LASSI.O..RUN",
+            ".......V.R.MI..", "...C...E..HIPS.", "...A.BASE.A.E..",
+            "...R.O..D.V....", "..RENT.LITER...", ".....H..T......",
+        ]
+        result = page.evaluate(
+            """async grid => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              return callQuackleWorker('simulateKibitz', {
+                gridJson: JSON.stringify(grid), rack: 'WEAFTUO',
+                playerScore: 150, opponentScore: 156,
+                numMoves: 15, iterations: 50, bagCount: 2, finalTurnsRemaining: 0
+              });
+            }""",
+            grid,
+        )
+        self.assertEqual(result["error"], "")
+        self.assertTrue(result["simulated"])
+        self.assertTrue(result["playToEnd"])
+        self.assertEqual(result["simulationMode"], "play-to-end")
+        self.assertEqual(result["winModel"], "terminal")
+        self.assertEqual(result["plies"], -1)
+        self.assertEqual(result["bagCount"], 2)
+        self.assertEqual(result["finalTurnsRemaining"], 0)
+        self.assertEqual(result["iterationsCompleted"], 50)
+        self.assertTrue(all(
+            move["samples"] == 50 and move["terminalSamples"] == 50
+            for move in result["moves"]
+        ))
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_worker_rejects_fractional_game_state(self):
+        page, page_errors, _ = self.open_page()
+        errors = page.evaluate(
+            """async () => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              const run = async (bagCount, finalTurnsRemaining) => {
+                try {
+                  await callQuackleWorker('simulateKibitz', {
+                    gridJson: JSON.stringify(Array(15).fill('...............')),
+                    rack: 'A', playerScore: 0, opponentScore: 0,
+                    numMoves: 15, iterations: 1, bagCount, finalTurnsRemaining
+                  });
+                  return '';
+                } catch (error) {
+                  return error.message;
+                }
+              };
+              return {
+                bag: await run(92.5, 0),
+                finalTurns: await run(0, 1.5)
+              };
+            }"""
+        )
+        self.assertIn("must be integers", errors["bag"])
+        self.assertIn("must be integers", errors["finalTurns"])
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_empty_bag_simulation_requires_the_observed_phase(self):
+        page, page_errors, _ = self.open_page()
+        grid = [
+            "CD........G....", ".......A.NOUN.Y", ".......L...TAME",
+            "......YEAH...E.", ".........ab.yA.", "......LOB.OWED.",
+            "..PROG..I.TEN.F", "....D..JOGS...I", "...LASSI.O..RUN",
+            ".......V.R.MI..", "...C...E..HIPS.", "...A.BASE.A.E..",
+            "...R.O..D.V....", "..RENT.LITER...", ".....H..T......",
+        ]
+        result = page.evaluate(
+            """async grid => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              const run = finalTurnsRemaining => callQuackleWorker('simulateKibitz', {
+                gridJson: JSON.stringify(grid), rack: 'WEAFTUO',
+                playerScore: 150, opponentScore: 156,
+                numMoves: 15, iterations: 1, bagCount: 0, finalTurnsRemaining
+              });
+              return {
+                unknown: await run(0),
+                firstFinal: await run(2),
+                lastFinal: await run(1)
+              };
+            }""",
+            grid,
+        )
+        self.assertIn("Choose whether one or two", result["unknown"]["error"])
+        for key, expected_turns in (("firstFinal", 2), ("lastFinal", 1)):
+            simulation = result[key]
+            self.assertTrue(simulation["simulated"])
+            self.assertEqual(simulation["finalTurnsRemaining"], expected_turns)
+            self.assertTrue(simulation["playToEnd"])
+            self.assertTrue(all(move["terminalSamples"] == 1 for move in simulation["moves"]))
         self.assertEqual(page_errors, [])
         page.close()
 
@@ -622,6 +761,7 @@ class BrowserPipelineTest(unittest.TestCase):
               grid: Array(15).fill('...............'), rack: '?',
               player_score: 0, opponent_score: 0,
               player_name: 'You', opponent_name: 'Opponent',
+              bag_count: 92,
               tile_values_complete: true
             })"""
         )

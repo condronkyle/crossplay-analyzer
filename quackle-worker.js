@@ -22,6 +22,9 @@ self.addEventListener('message', async event => {
     if (type === 'init') {
       result = { info: module.getEngineInfo() };
     } else if (type === 'simulateKibitz') {
+      if (!Number.isInteger(payload.bagCount) || !Number.isInteger(payload.finalTurnsRemaining)) {
+        throw new Error('Bag count and final-turn state must be integers');
+      }
       result = module.simulateKibitz(
         payload.gridJson,
         payload.rack,
@@ -29,6 +32,8 @@ self.addEventListener('message', async event => {
         payload.opponentScore,
         payload.numMoves,
         payload.iterations,
+        payload.bagCount,
+        payload.finalTurnsRemaining,
       );
     } else {
       throw new Error(`Unknown Quackle worker request: ${type}`);

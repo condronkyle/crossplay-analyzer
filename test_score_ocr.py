@@ -27,6 +27,7 @@ GROUND_TRUTH = {
     'IMG_3047.png':   ('235', '285'),
     'IMG_3048.png':   ('407', '412'),
     'IMG_150_139.png': ('150', '139'),
+    'IMG_150_156.png': ('150', '156'),
 }
 
 # ── Score band / region geometry per image ────────────────────────────────
@@ -39,6 +40,7 @@ GEOMETRY = {
     'IMG_3047.png':   (334, 370, 141, 400, 801, 1143),
     'IMG_3048.png':   (679, 719, 220, 390, 800, 950),
     'IMG_150_139.png': (122, 135, 66, 92, 382, 406),
+    'IMG_150_156.png': (153, 169, 83, 115, 477, 508),
 }
 
 # ── Known digit boundaries for template extraction: (image, digit, x0,x1,y0,y1)
@@ -69,6 +71,8 @@ DIGIT_SAMPLES = [
     ('IMG_3048.png', '4', 835, 864, 679, 719),
     ('IMG_3048.png', '1', 867, 884, 679, 719),
     ('IMG_3048.png', '2', 887, 913, 679, 719),
+    # Compact normal-game header. This is the first fixture with digit 6.
+    ('IMG_150_156.png', '6', 496, 507, 153, 169),
 ]
 
 

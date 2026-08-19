@@ -8,7 +8,7 @@ Contributor guide for the Crossplay Board Analyzer — a fully offline, determin
 - `manual.html` — alternate manual board-input page.
 - `quackle.js`, `quackle.wasm`, `quackle.data` — the Quackle WASM engine and dictionary (loaded at runtime).
 - `quackle-worker.js` — runs Quackle move generation and two-ply simulation off the page thread.
-- `test_board.png`, `IMG_3046.png`, `IMG_3047.png`, `IMG_3048.png` — example screenshots used as test fixtures.
+- `test_board.png` and `IMG_*.png` — screenshots used as test fixtures.
 - `test_grid_detection.py` — offline grid-detection test (passes).
 - `test_score_ocr.py` — header score-OCR regression test.
 - `test_browser_pipeline.py` — browser-level parsing and Quackle regression test.
@@ -36,7 +36,7 @@ python3 test_browser_pipeline.py  # real browser pipeline test (needs Playwright
 ## Testing Guidelines
 
 - Python tests live at the repo root (`test_*.py`) and run against the example screenshots.
-- The JavaScript pipeline test loads all four screenshots in Chromium and checks the exact board, rack, scores, words, and Quackle output.
+- The JavaScript pipeline test loads all fixture screenshots in Chromium and checks the exact board, rack, scores, words, and Quackle output.
 - New CV/OCR work should update or add a `test_*.py` so regressions are caught offline.
 - `test_score_ocr.py` is the pass/fail gate for header score OCR.
 

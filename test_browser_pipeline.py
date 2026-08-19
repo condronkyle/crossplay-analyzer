@@ -34,6 +34,7 @@ FIXTURES = {
         "scores": ("108", "130"),
         "rack": "WLSAPDI",
         "tiles": "31",
+        "bag": "55",
         "words": 12,
         "blanks": ["O9"],
     },
@@ -58,6 +59,7 @@ FIXTURES = {
         "scores": ("43", "93"),
         "rack": "G",
         "tiles": "26",
+        "bag": "66",
         "words": 5,
         "blanks": ["K11", "N12"],
     },
@@ -82,6 +84,7 @@ FIXTURES = {
         "scores": ("235", "285"),
         "rack": "DUOONES",
         "tiles": "73",
+        "bag": "13",
         "words": 26,
         "blanks": ["O6", "I8", "N12"],
     },
@@ -106,6 +109,7 @@ FIXTURES = {
         "scores": ("407", "412"),
         "rack": "--",
         "tiles": "96",
+        "bag": "--",
         "words": 35,
         "blanks": ["I2", "C14", "H15"],
     },
@@ -130,7 +134,33 @@ FIXTURES = {
         "scores": ("150", "139"),
         "rack": "IUAFTIO",
         "tiles": "82",
+        "bag": "4",
         "words": 34,
+        "blanks": ["J5", "K5", "M5"],
+    },
+    "IMG_150_156.png": {
+        "grid": [
+            "..........G....",
+            ".......A.NOUN.Y",
+            ".......L...TAME",
+            "......YEAH...E.",
+            ".........AB.YA.",
+            "......LOB.OWED.",
+            "..PROG..I.TEN.F",
+            "....D..JOGS...I",
+            "...LASSI.O..RUN",
+            ".......V.R.MI..",
+            "...C...E..HIPS.",
+            "...A.BASE.A.E..",
+            "...R.O..D.V....",
+            "..RENT.LITER...",
+            ".....H..T......",
+        ],
+        "scores": ("150", "156"),
+        "rack": "WEAFTUO",
+        "tiles": "84",
+        "bag": "2",
+        "words": 38,
         "blanks": ["J5", "K5", "M5"],
     },
 }
@@ -212,6 +242,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertEqual(page.locator("#p2Score").text_content(), expected["scores"][1])
                 self.assertEqual(page.locator("#rackDisplay").text_content(), expected["rack"])
                 self.assertEqual(page.locator("#tileCount").text_content(), expected["tiles"])
+                self.assertEqual(page.locator("#bagCount").text_content(), expected["bag"])
                 self.assertEqual(self.rendered_blank_positions(page), expected["blanks"])
                 self.assertEqual(page.locator("#wordsContainer tbody tr").count() - 1, expected["words"])
                 self.assertEqual(page_errors, [])
@@ -219,7 +250,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 if fixture == "IMG_3048.png":
                     self.assertTrue(page.locator("#kibitzBtn").evaluate("el => el.classList.contains('hidden')"))
 
-                if fixture == "IMG_150_139.png":
+                if fixture in {"IMG_150_139.png", "IMG_150_156.png"}:
                     parsed = page.evaluate("lastParsed")
                     self.assertTrue(parsed["tile_values_complete"])
                     internal_blanks = [f"{position[1:]}{position[0]}" for position in expected["blanks"]]
@@ -230,8 +261,8 @@ class BrowserPipelineTest(unittest.TestCase):
                         col = ord(position[0]) - ord("A")
                         parsed_grid[row][col] = parsed_grid[row][col].lower()
                     self.assertEqual(parsed["grid"], ["".join(row) for row in parsed_grid])
-                    value = page.evaluate(
-                        """async fixtureUrl => {
+                    values = page.evaluate(
+                        """async ({fixtureUrl, cells}) => {
                           const response = await fetch(fixtureUrl);
                           const bitmap = await createImageBitmap(await response.blob());
                           const canvas = document.createElement('canvas');
@@ -241,14 +272,54 @@ class BrowserPipelineTest(unittest.TestCase):
                           context.drawImage(bitmap, 0, 0);
                           const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
                           const grid = detectBoardGrid(pixels.data, canvas.width, canvas.height);
-                          return readTileValue(
-                            pixels.data, canvas.width,
-                            grid.vGrid[7], grid.hGrid[7],
-                            grid.vGrid[8], grid.hGrid[8]);
+                          return Object.fromEntries(cells.map(({label, row, col}) => {
+                            const letter = readTileLetter(
+                              pixels.data, canvas.width,
+                              grid.vGrid[col], grid.hGrid[row],
+                              grid.vGrid[col + 1], grid.hGrid[row + 1]);
+                            const value = readTileValue(
+                              pixels.data, canvas.width,
+                              grid.vGrid[col], grid.hGrid[row],
+                              grid.vGrid[col + 1], grid.hGrid[row + 1], letter);
+                            return [label, value];
+                          }));
                         }""",
-                        f"{self.base_url}/{fixture}",
+                        {
+                            "fixtureUrl": f"{self.base_url}/{fixture}",
+                            "cells": ([
+                                {"label": "M5", "row": 4, "col": 12},
+                                {"label": "L6", "row": 5, "col": 11},
+                                {"label": "E8", "row": 7, "col": 4},
+                                {"label": "H8", "row": 7, "col": 7},
+                            ] if fixture == "IMG_150_156.png" else [
+                                {"label": "H8", "row": 7, "col": 7},
+                            ]),
+                        },
                     )
-                    self.assertEqual(value, 10)
+                    expected_values = (
+                        {"M5": 0, "L6": 5, "E8": 2, "H8": 10}
+                        if fixture == "IMG_150_156.png" else {"H8": 10}
+                    )
+                    self.assertEqual(values, expected_values)
+
+                    if fixture == "IMG_150_156.png":
+                        self.assertEqual(parsed["bag_count"], 2)
+                        self.assertEqual(
+                            page.locator("#tilePoolSummary").text_content(),
+                            "Bag 2 | Opponent rack 7 hidden | Unseen 9",
+                        )
+                        unseen = page.eval_on_selector_all(
+                            "#unseenTiles .tile-chip",
+                            "nodes => nodes.map(node => [node.dataset.tile, Number(node.dataset.count)])",
+                        )
+                        self.assertEqual(
+                            unseen,
+                            [["C", 1], ["D", 1], ["E", 1], ["I", 2],
+                             ["K", 1], ["Q", 1], ["X", 1], ["Z", 1]],
+                        )
+                        self.assertFalse(page.locator("#kibitzBtn").evaluate(
+                            "el => el.classList.contains('hidden')"
+                        ))
 
                 if fixture == "test_board.png":
                     page.evaluate(
@@ -296,6 +367,51 @@ class BrowserPipelineTest(unittest.TestCase):
                     self.assertFalse(any("bogowin heuristic" in message for message in console_messages))
 
                 page.close()
+
+    def test_crossplay_premium_layout(self):
+        page, page_errors, _ = self.open_page()
+        page.evaluate(
+            """renderResult({
+              grid: Array(15).fill('...............'), rack: 'A',
+              player_score: 0, opponent_score: 0,
+              player_name: 'You', opponent_name: 'Opponent',
+              tile_values_complete: true
+            })"""
+        )
+        premiums = page.eval_on_selector_all(
+            "#boardContainer td[data-premium]",
+            "nodes => Object.fromEntries(['3L','2L','2W','3W'].map(type => [type, nodes.filter(node => node.dataset.premium === type).map(node => node.dataset.position)]))",
+        )
+        self.assertEqual(premiums, {
+            "3L": "A1 O1 G2 I2 F5 J5 E6 K6 B7 N7 B9 N9 E10 K10 F11 J11 G14 I14 A15 O15".split(),
+            "2L": "H1 E3 K3 D4 L4 C5 M5 H6 A8 F8 J8 O8 H10 C11 M11 D12 L12 E13 K13 H15".split(),
+            "2W": "B2 N2 H4 D8 L8 H12 B14 N14".split(),
+            "3W": "D1 L1 A4 O4 A12 O12 D15 L15".split(),
+        })
+        self.assertEqual(page.locator("td[data-position='H8']").get_attribute("data-premium"), None)
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_crossplay_h_scores_three_points(self):
+        page, page_errors, _ = self.open_page()
+        result = page.evaluate(
+            """async () => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              return callQuackleWorker('simulateKibitz', {
+                gridJson: JSON.stringify(Array(15).fill('...............')),
+                rack: 'HAT', playerScore: 0, opponentScore: 0,
+                numMoves: 15, iterations: 1
+              });
+            }"""
+        )
+        self.assertTrue(result["simulated"])
+        move = next(
+            candidate for candidate in result["moves"]
+            if candidate["tiles"] == "HAT" and candidate["position"] == "8G"
+        )
+        self.assertEqual(move["score"], 5)
+        self.assertEqual(page_errors, [])
+        page.close()
 
     def test_compact_header_and_tile_glyph_regressions(self):
         """Check the exact pixels from the reported compact-screen failure.

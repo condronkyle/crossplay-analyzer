@@ -864,7 +864,8 @@ function cleanHeaderGlyph(mask, w, h) {
 
 function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
   const runW = x1 - x0 + 1;
-  const raw = new Uint8Array(runW * (y1 - y0 + 1));
+  const runH = y1 - y0 + 1;
+  const raw = new Uint8Array(runW * runH);
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) raw[(y - y0) * runW + x - x0] = dark[y * width + x];
   }
@@ -877,6 +878,58 @@ function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
   // Accept it as one digit only when the whole-glyph match is strong.
   if (wholeHit && runW <= 35 && wholeHit.distance < 0.35) {
     return { distance: wholeHit.distance, text: wholeHit.ch };
+  }
+
+  // Touching digits can form one column run. Prefer a real sparse bridge
+  // between glyphs over an arbitrary DP cut through a glyph. This keeps a
+  // touching "53" from becoming "63" when the 5/6 templates are close.
+  const columnInk = new Uint16Array(runW);
+  for (let x = 0; x < runW; x++) {
+    for (let y = 0; y < runH; y++) columnInk[x] += raw[y * runW + x];
+  }
+  const sparseLimit = Math.max(2, Math.round(runH * 0.10));
+  const peakFloor = Math.max(5, Math.round(runH * 0.25));
+  const sparseValleys = [];
+  let valleyStart = -1;
+  for (let x = 1; x < runW - 1; x++) {
+    if (columnInk[x] <= sparseLimit) {
+      if (valleyStart < 0) valleyStart = x;
+    } else if (valleyStart >= 0) {
+      sparseValleys.push([valleyStart, x - 1]);
+      valleyStart = -1;
+    }
+  }
+  if (valleyStart >= 0) sparseValleys.push([valleyStart, runW - 2]);
+
+  const decodeSlice = (start, end) => {
+    const glyphW = end - start;
+    if (glyphW < 5) return null;
+    const candidate = new Uint8Array(glyphW * runH);
+    for (let y = 0; y < runH; y++) {
+      for (let x = 0; x < glyphW; x++) candidate[y * glyphW + x] = raw[y * runW + start + x];
+    }
+    const cleaned = cleanHeaderGlyph(candidate, glyphW, runH);
+    return cleaned ? matchGlyphDetailed(cleaned.mask, cleaned.w, cleaned.h) : null;
+  };
+  const bridgeCandidates = [];
+  for (const [start, end] of sparseValleys) {
+    let leftPeak = 0, rightPeak = 0;
+    for (let x = Math.max(0, start - 5); x < start; x++) {
+      leftPeak = Math.max(leftPeak, columnInk[x]);
+    }
+    for (let x = end + 1; x <= Math.min(runW - 1, end + 5); x++) {
+      rightPeak = Math.max(rightPeak, columnInk[x]);
+    }
+    if (end - start + 1 > 3 || start < 5 || runW - end - 1 < 5 ||
+        leftPeak < peakFloor || rightPeak < peakFloor) continue;
+    const left = decodeSlice(0, start);
+    const right = decodeSlice(end + 1, runW);
+    if (left && right && left.distance < 0.35 && right.distance < 0.35) {
+      bridgeCandidates.push({
+        distance: left.distance + right.distance,
+        text: left.ch + right.ch
+      });
+    }
   }
 
   // Dynamic programming handles genuinely touching glyphs. Candidate widths
@@ -899,10 +952,15 @@ function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
     }
   }
   const decoded = dp[runW];
+  let baseline = decoded;
   if (wholeHit && (!decoded || decoded.text.length < 2 || decoded.distance >= wholeHit.distance * 0.8)) {
-    return { distance: wholeHit.distance, text: wholeHit.ch };
+    baseline = { distance: wholeHit.distance, text: wholeHit.ch };
   }
-  return decoded;
+  if (bridgeCandidates.length) {
+    bridgeCandidates.sort((a, b) => a.distance - b.distance);
+    if (!baseline || bridgeCandidates[0].distance < baseline.distance) return bridgeCandidates[0];
+  }
+  return baseline;
 }
 
 function findHeaderProjectionBands(imageData, width, height, gridTop) {
@@ -1167,6 +1225,71 @@ function readBagCount(imageData, width, height, gridTop) {
   const decoded = decodeHeaderSideDetailed(dark, width, bx0, bx1 + 1, by0, by1);
   if (!decoded || decoded.averageDistance >= 0.35 || !/^\d{1,2}$/.test(decoded.text)) return null;
   return parseInt(decoded.text, 10);
+}
+
+function readFinalTurnState(imageData, width, gridTop) {
+  // During the last Crossplay turn, the app shows an aligned navy "Last turn"
+  // label for the current player and a gray "Done" label for the opponent.
+  // Require both labels. A single or unclear label falls back to user input.
+  const y0 = Math.max(0, Math.floor(gridTop * 0.20));
+  const y1 = Math.max(y0, Math.ceil(gridTop * 0.60));
+  const findBanner = (x0, x1, kind) => {
+    const regionW = x1 - x0, regionH = y1 - y0;
+    const mask = new Uint8Array(regionW * regionH);
+    for (let y = 0; y < regionH; y++) {
+      for (let x = 0; x < regionW; x++) {
+        const i = ((y0 + y) * width + x0 + x) * 4;
+        const r = imageData[i], g = imageData[i + 1], b = imageData[i + 2];
+        const [h, s, v] = rgbToHsv(r, g, b);
+        const matches = kind === 'last-turn'
+          ? h >= 95 && h <= 120 && s >= 70 && v >= 45 && v <= 175
+          : s <= 18 && v >= 75 && v <= 190;
+        if (matches) mask[y * regionW + x] = 1;
+      }
+    }
+
+    const seen = new Uint8Array(mask.length);
+    const candidates = [];
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i] || seen[i]) continue;
+      const queue = [i];
+      seen[i] = 1;
+      let minX = i % regionW, maxX = minX;
+      let minY = (i / regionW) | 0, maxY = minY, size = 0;
+      while (queue.length) {
+        const p = queue.pop();
+        const px = p % regionW, py = (p / regionW) | 0;
+        size++;
+        minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+        minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+        for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+          const nx = px + dx, ny = py + dy;
+          if (nx < 0 || nx >= regionW || ny < 0 || ny >= regionH) continue;
+          const next = ny * regionW + nx;
+          if (mask[next] && !seen[next]) { seen[next] = 1; queue.push(next); }
+        }
+      }
+      const bannerW = maxX - minX + 1, bannerH = maxY - minY + 1;
+      const fill = size / (bannerW * bannerH);
+      if (bannerW < width * 0.07 || bannerW > width * 0.24 ||
+          bannerH < width * 0.025 || bannerH > width * 0.08 ||
+          bannerW / bannerH < 1.75 || fill < 0.35) continue;
+      candidates.push({ x: x0 + minX, y: y0 + minY, width: bannerW, height: bannerH, size });
+    }
+    return candidates.length === 1 ? candidates[0] : null;
+  };
+
+  const player = findBanner(0, Math.ceil(width * 0.25), 'last-turn');
+  const opponent = findBanner(Math.floor(width * 0.75), width, 'done');
+  if (!player || !opponent) return null;
+  const playerCenterY = player.y + player.height / 2;
+  const opponentCenterY = opponent.y + opponent.height / 2;
+  if (Math.abs(playerCenterY - opponentCenterY) > width * 0.025) return null;
+  return {
+    player_label: 'Last turn',
+    opponent_label: 'Done',
+    final_turns_remaining: 1
+  };
 }
 
 // Detect whether each side's header score is "0". Kept as a compatibility
@@ -1746,8 +1869,14 @@ async function analyzeOffline(imageSource) {
   const opponentScore = headerScores.opponent && /^\d+$/.test(headerScores.opponent)
     ? parseInt(headerScores.opponent, 10) : null;
   const bagCount = readBagCount(pixels, w, h, grid.hGrid[0]);
+  const finalTurnState = bagCount === 0
+    ? readFinalTurnState(pixels, w, grid.hGrid[0])
+    : null;
   debugLog += `Header score OCR: ${headerScores.player || '?'} vs ${headerScores.opponent || '?'}\n`;
   debugLog += `Bag count OCR: ${bagCount ?? '?'}\n`;
+  debugLog += `Final-turn OCR: ${finalTurnState
+    ? `${finalTurnState.player_label} / ${finalTurnState.opponent_label}`
+    : 'not detected'}\n`;
   document.getElementById('debugLog').textContent = debugLog;
 
   const valueStatus = unrecognizedValues
@@ -1763,6 +1892,10 @@ async function analyzeOffline(imageSource) {
     player_score: playerScore,
     opponent_score: opponentScore,
     bag_count: bagCount,
+    final_turns_remaining: finalTurnState?.final_turns_remaining ?? null,
+    final_turn_labels: finalTurnState
+      ? [finalTurnState.player_label, finalTurnState.opponent_label]
+      : [],
     player_name: 'You',
     opponent_name: 'Opponent'
   };
@@ -1974,10 +2107,20 @@ function renderResult(parsed) {
     document.getElementById('kibitzBtn').classList.remove('hidden');
     lastParsed = parsed;
     if (parsed.bag_count === 0) {
-      document.getElementById('finalTurnPanel').classList.remove('hidden');
-      document.getElementById('kibitzBtn').disabled = true;
-      document.getElementById('engineStatus').textContent =
-        'Choose the Crossplay final-turn state before running Quackle.';
+      if (parsed.final_turns_remaining === 1 || parsed.final_turns_remaining === 2) {
+        selectedFinalTurns = parsed.final_turns_remaining;
+        const observedInput = document.querySelector(
+          `input[name="finalTurnState"][value="${selectedFinalTurns}"]`);
+        if (observedInput) observedInput.checked = true;
+        document.getElementById('engineStatus').textContent =
+          `Detected ${parsed.final_turn_labels?.join(' / ') || 'the final-turn labels'}: ` +
+          `${selectedFinalTurns} Crossplay final ${selectedFinalTurns === 1 ? 'turn remains' : 'turns remain'}.`;
+      } else {
+        document.getElementById('finalTurnPanel').classList.remove('hidden');
+        document.getElementById('kibitzBtn').disabled = true;
+        document.getElementById('engineStatus').textContent =
+          'Choose the Crossplay final-turn state before running Quackle.';
+      }
     } else {
       selectedFinalTurns = 0;
     }
@@ -1990,7 +2133,7 @@ function renderResult(parsed) {
 // ── Quackle WASM Engine ─────────────────────────────────────────────────
 const QUACKLE_MOVE_COUNT = 15;
 const QUACKLE_SIMULATION_PLIES = 2;
-const QUACKLE_SIMULATION_ITERATIONS = 50;
+const QUACKLE_SIMULATION_ITERATIONS = 277;
 // Candidate plus two future moves can draw at most three full racks.
 const QUACKLE_TERMINAL_BAG_LIMIT = 21;
 let quackleWorker = null;

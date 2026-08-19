@@ -163,6 +163,31 @@ FIXTURES = {
         "words": 38,
         "blanks": ["J5", "K5", "M5"],
     },
+    "IMG_153_169.png": {
+        "grid": [
+            "..........G....",
+            ".......A.NOUN.Y",
+            ".......L...TAME",
+            "......YEAH...E.",
+            ".CITED...AS.YA.",
+            "...O..LOB.OWED.",
+            "..PROG..I.TEN.F",
+            "....D..JOGS...I",
+            "...LASSI.O..RUN",
+            ".......V.R.MI..",
+            "...C...E..HIPS.",
+            "...A.BASE.A.E..",
+            "...R.O..D.V....",
+            "..RENT.LITER...",
+            ".....H..T......",
+        ],
+        "scores": ("153", "169"),
+        "rack": "WEAFIUZ",
+        "tiles": "90",
+        "bag": "0",
+        "words": 40,
+        "blanks": ["J5", "K5", "M5"],
+    },
 }
 
 
@@ -250,7 +275,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 if fixture == "IMG_3048.png":
                     self.assertTrue(page.locator("#kibitzBtn").evaluate("el => el.classList.contains('hidden')"))
 
-                if fixture in {"IMG_150_139.png", "IMG_150_156.png"}:
+                if fixture in {"IMG_150_139.png", "IMG_150_156.png", "IMG_153_169.png"}:
                     parsed = page.evaluate("lastParsed")
                     self.assertTrue(parsed["tile_values_complete"])
                     internal_blanks = [f"{position[1:]}{position[0]}" for position in expected["blanks"]]
@@ -321,6 +346,23 @@ class BrowserPipelineTest(unittest.TestCase):
                             "el => el.classList.contains('hidden')"
                         ))
 
+                    if fixture == "IMG_153_169.png":
+                        self.assertEqual(parsed["final_turns_remaining"], 1)
+                        self.assertEqual(parsed["final_turn_labels"], ["Last turn", "Done"])
+                        self.assertEqual(page.evaluate("selectedFinalTurns"), 1)
+                        self.assertTrue(page.locator("#finalTurnPanel").evaluate(
+                            "el => el.classList.contains('hidden')"
+                        ))
+                        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+                        self.assertIn(
+                            "Detected Last turn / Done",
+                            page.locator("#engineStatus").text_content(),
+                        )
+                        self.assertEqual(
+                            page.locator("#tilePoolSummary").text_content(),
+                            "Bag 0 | Opponent rack 3 hidden | Unseen 3",
+                        )
+
                 if fixture == "test_board.png":
                     page.evaluate(
                         "window.__quackleStatuses = []; "
@@ -331,12 +373,12 @@ class BrowserPipelineTest(unittest.TestCase):
                     )
                     page.locator("#kibitzBtn").click()
                     page.wait_for_function(
-                        "document.getElementById('engineStatus').textContent.includes('running 50 rounds') || "
+                        "document.getElementById('engineStatus').textContent.includes('running 277 rounds') || "
                         "document.getElementById('engineStatus').textContent.startsWith('Error:')",
                         timeout=120_000,
                     )
                     running_status = page.locator("#engineStatus").text_content()
-                    self.assertIn("running 50 rounds", running_status)
+                    self.assertIn("running 277 rounds", running_status)
                     self.assertTrue(page.locator("#kibitzBtn").is_disabled())
                     page.evaluate(
                         "window.__quackleHeartbeat = false; "
@@ -351,7 +393,7 @@ class BrowserPipelineTest(unittest.TestCase):
                     engine_status = page.locator("#engineStatus").text_content()
                     self.assertTrue(engine_status.startswith("Found "), engine_status)
                     self.assertTrue(any(
-                        "running 50 rounds" in status
+                        "running 277 rounds" in status
                         for status in page.evaluate("window.__quackleStatuses")
                     ))
                     self.assertEqual(page.locator("#movesContainer tbody tr").count() - 1, 15)
@@ -360,9 +402,9 @@ class BrowserPipelineTest(unittest.TestCase):
                     for index in range(win_cells.count()):
                         cell = win_cells.nth(index)
                         self.assertRegex(cell.text_content(), r"^(100|[0-9]{1,2})\.\d%$")
-                        self.assertEqual(cell.get_attribute("data-samples"), "50")
-                    self.assertIn("Simulated 50 rounds per move", engine_status)
-                    self.assertIn("750 playouts total", engine_status)
+                        self.assertEqual(cell.get_attribute("data-samples"), "277")
+                    self.assertIn("Simulated 277 rounds per move", engine_status)
+                    self.assertIn("4,155 playouts total", engine_status)
                     self.assertFalse(page.locator("#kibitzBtn").is_disabled())
                     self.assertFalse(any("bogowin heuristic" in message for message in console_messages))
 
@@ -478,11 +520,11 @@ class BrowserPipelineTest(unittest.TestCase):
         self.wait_for_analysis(page)
         page.locator("#kibitzBtn").click()
         page.wait_for_function(
-            "document.getElementById('engineStatus').textContent.includes('running 50 rounds') || "
+            "document.getElementById('engineStatus').textContent.includes('running 277 rounds') || "
             "document.getElementById('engineStatus').textContent.startsWith('Error:')",
             timeout=120_000,
         )
-        self.assertIn("running 50 rounds", page.locator("#engineStatus").text_content())
+        self.assertIn("running 277 rounds", page.locator("#engineStatus").text_content())
 
         page.locator("#imageUrlInput").fill(f"{self.base_url}/IMG_3046.png")
         self.wait_for_analysis(page)
@@ -503,11 +545,11 @@ class BrowserPipelineTest(unittest.TestCase):
         page.evaluate("loadSample()")
         page.locator("#kibitzBtn").click()
         page.wait_for_function(
-            "document.getElementById('engineStatus').textContent.includes('running 50 rounds') || "
+            "document.getElementById('engineStatus').textContent.includes('running 277 rounds') || "
             "document.getElementById('engineStatus').textContent.startsWith('Error:')",
             timeout=120_000,
         )
-        self.assertIn("running 50 rounds", page.locator("#engineStatus").text_content())
+        self.assertIn("running 277 rounds", page.locator("#engineStatus").text_content())
         self.assertTrue(page.locator("#kibitzBtn").is_disabled())
         page.evaluate(
             "window.__manualHeartbeat = false; "
@@ -521,14 +563,14 @@ class BrowserPipelineTest(unittest.TestCase):
         )
         engine_status = page.locator("#engineStatus").text_content()
         self.assertTrue(engine_status.startswith("Found "), engine_status)
-        self.assertIn("Simulated 50 rounds per move", engine_status)
-        self.assertIn("750 playouts total", engine_status)
+        self.assertIn("Simulated 277 rounds per move", engine_status)
+        self.assertIn("4,155 playouts total", engine_status)
         win_cells = page.locator("#movesContainer td[data-samples]")
         self.assertEqual(win_cells.count(), 15)
         for index in range(win_cells.count()):
             cell = win_cells.nth(index)
             self.assertRegex(cell.text_content(), r"^(100|[0-9]{1,2})\.\d%$")
-            self.assertEqual(cell.get_attribute("data-samples"), "50")
+            self.assertEqual(cell.get_attribute("data-samples"), "277")
         self.assertFalse(page.locator("#kibitzBtn").is_disabled())
         self.assertFalse(any("bogowin heuristic" in message for message in console_messages))
         self.assertEqual(page_errors, [])
@@ -670,7 +712,7 @@ class BrowserPipelineTest(unittest.TestCase):
               return callQuackleWorker('simulateKibitz', {
                 gridJson: JSON.stringify(grid), rack: 'WEAFTUO',
                 playerScore: 150, opponentScore: 156,
-                numMoves: 15, iterations: 50, bagCount: 2, finalTurnsRemaining: 0
+                numMoves: 15, iterations: 277, bagCount: 2, finalTurnsRemaining: 0
               });
             }""",
             grid,
@@ -683,11 +725,59 @@ class BrowserPipelineTest(unittest.TestCase):
         self.assertEqual(result["plies"], -1)
         self.assertEqual(result["bagCount"], 2)
         self.assertEqual(result["finalTurnsRemaining"], 0)
-        self.assertEqual(result["iterationsCompleted"], 50)
+        self.assertEqual(result["iterationsCompleted"], 277)
         self.assertTrue(all(
-            move["samples"] == 50 and move["terminalSamples"] == 50
+            move["samples"] == 277 and move["terminalSamples"] == 277
             for move in result["moves"]
         ))
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_observed_last_turn_runs_277_terminal_samples(self):
+        page, page_errors, _ = self.open_page()
+        page.locator("#imageUrlInput").fill(f"{self.base_url}/IMG_153_169.png")
+        self.wait_for_analysis(page)
+
+        self.assertEqual(page.evaluate("selectedFinalTurns"), 1)
+        self.assertTrue(page.locator("#finalTurnPanel").evaluate(
+            "el => el.classList.contains('hidden')"
+        ))
+        page.locator("#kibitzBtn").click()
+        page.wait_for_function(
+            "document.getElementById('engineStatus').textContent.startsWith('Found ') || "
+            "document.getElementById('engineStatus').textContent.startsWith('Error:')",
+            timeout=120_000,
+        )
+
+        engine_status = page.locator("#engineStatus").text_content()
+        self.assertIn("Played 277 rounds per move", engine_status)
+        self.assertIn("4,155 playouts total", engine_status)
+        win_cells = page.locator("#movesContainer tbody tr:not(:first-child) td:nth-child(4)")
+        self.assertEqual(win_cells.count(), 15)
+        for index in range(win_cells.count()):
+            cell = win_cells.nth(index)
+            self.assertEqual(cell.get_attribute("data-samples"), "277")
+            self.assertRegex(cell.text_content(), r"^(100|[0-9]{1,2})\.\d%$")
+        self.assertFalse(page.locator("#kibitzBtn").is_disabled())
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_simulation_rejects_more_than_277_rounds(self):
+        page, page_errors, _ = self.open_page()
+        result = page.evaluate(
+            """async () => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              return callQuackleWorker('simulateKibitz', {
+                gridJson: JSON.stringify(Array(15).fill('...............')),
+                rack: 'A', playerScore: 0, opponentScore: 0,
+                numMoves: 15, iterations: 278, bagCount: 92, finalTurnsRemaining: 0
+              });
+            }"""
+        )
+        self.assertEqual(
+            result["error"],
+            "Simulation iterations must be between 1 and 277",
+        )
         self.assertEqual(page_errors, [])
         page.close()
 

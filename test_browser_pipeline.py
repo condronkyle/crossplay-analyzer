@@ -35,6 +35,7 @@ FIXTURES = {
         "rack": "WLSAPDI",
         "tiles": "31",
         "words": 12,
+        "blanks": ["O9"],
     },
     "IMG_3046.png": {
         "grid": [
@@ -58,6 +59,7 @@ FIXTURES = {
         "rack": "G",
         "tiles": "26",
         "words": 5,
+        "blanks": ["K11", "N12"],
     },
     "IMG_3047.png": {
         "grid": [
@@ -81,6 +83,7 @@ FIXTURES = {
         "rack": "DUOONES",
         "tiles": "73",
         "words": 26,
+        "blanks": ["O6", "I8", "N12"],
     },
     "IMG_3048.png": {
         "grid": [
@@ -104,6 +107,7 @@ FIXTURES = {
         "rack": "--",
         "tiles": "96",
         "words": 35,
+        "blanks": ["I2", "C14", "H15"],
     },
 }
 
@@ -162,6 +166,16 @@ class BrowserPipelineTest(unittest.TestCase):
               .join(''))""",
         )
 
+    def rendered_blank_positions(self, page):
+        return page.eval_on_selector_all(
+            "#boardContainer table.board tr:not(:first-child)",
+            """rows => rows.flatMap((row, rowIndex) =>
+              [...row.querySelectorAll('td')].flatMap((cell, colIndex) =>
+                cell.classList.contains('blank-tile')
+                  ? [`${String.fromCharCode(65 + colIndex)}${rowIndex + 1}`]
+                  : []))""",
+        )
+
     def test_all_fixtures(self):
         for fixture, expected in FIXTURES.items():
             with self.subTest(fixture=fixture):
@@ -174,6 +188,7 @@ class BrowserPipelineTest(unittest.TestCase):
                 self.assertEqual(page.locator("#p2Score").text_content(), expected["scores"][1])
                 self.assertEqual(page.locator("#rackDisplay").text_content(), expected["rack"])
                 self.assertEqual(page.locator("#tileCount").text_content(), expected["tiles"])
+                self.assertEqual(self.rendered_blank_positions(page), expected["blanks"])
                 self.assertEqual(page.locator("#wordsContainer tbody tr").count() - 1, expected["words"])
                 self.assertEqual(page_errors, [])
 
@@ -247,13 +262,30 @@ class BrowserPipelineTest(unittest.TestCase):
               const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
               const xs = [19,69,120,172,223,275,325,378,428,480,531,583,633,685,736,788];
               const ys = [383,432,484,534,586,637,689,739,792,842,894,945,997,1047,1099,1150];
-              const lCells = [[2,7],[5,6],[8,3],[13,7]].map(([row, col]) => ({
+              const readCell = (row, col) => ({
                 tile: isTileCell(pixels.data, canvas.width, xs[col], ys[row], xs[col + 1], ys[row + 1]),
-                letter: readTileLetter(pixels.data, canvas.width, xs[col], ys[row], xs[col + 1], ys[row + 1])
-              }));
+                letter: readTileLetter(pixels.data, canvas.width, xs[col], ys[row], xs[col + 1], ys[row + 1]),
+                value: readTileValue(pixels.data, canvas.width, xs[col], ys[row], xs[col + 1], ys[row + 1])
+              });
+              const lCells = [[2,7],[5,6],[8,3],[13,7]].map(([row, col]) => readCell(row, col));
+
+              const half = document.createElement('canvas');
+              half.width = Math.round(canvas.width / 2);
+              half.height = Math.round(canvas.height / 2);
+              const halfContext = half.getContext('2d');
+              halfContext.drawImage(canvas, 0, 0, half.width, half.height);
+              const halfPixels = halfContext.getImageData(0, 0, half.width, half.height);
               return {
                 scores: readHeaderScores(pixels.data, canvas.width, canvas.height, ys[0]),
+                halfScores: readHeaderScores(
+                  halfPixels.data, half.width, half.height, Math.round(ys[0] / 2)),
                 lCells,
+                compactValues: {
+                  J5: readCell(4, 9).value,
+                  K5: readCell(4, 10).value,
+                  M5: readCell(4, 12).value,
+                  H8: readCell(7, 7).value
+                },
                 rackO: readTileLetter(pixels.data, canvas.width, 686, 1277, 790, 1383)
               };
             }""",
@@ -261,7 +293,9 @@ class BrowserPipelineTest(unittest.TestCase):
         )
 
         self.assertEqual(result["scores"], {"player": "150", "opponent": "139"})
-        self.assertEqual(result["lCells"], [{"tile": True, "letter": "L"}] * 4)
+        self.assertEqual(result["halfScores"], {"player": "150", "opponent": "139"})
+        self.assertTrue(all(cell["tile"] and cell["letter"] == "L" for cell in result["lCells"]))
+        self.assertEqual(result["compactValues"], {"J5": 0, "K5": 0, "M5": 0, "H8": 10})
         self.assertEqual(result["rackO"], "O")
         self.assertEqual(page_errors, [])
         page.close()
@@ -377,6 +411,51 @@ class BrowserPipelineTest(unittest.TestCase):
         self.assertFalse(result["simulated"])
         self.assertEqual(result["iterationsCompleted"], 0)
         self.assertIn("more tiles than the Crossplay distribution", result["error"])
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_engine_accepts_ocr_assigned_blanks(self):
+        page, page_errors, _ = self.open_page()
+        uppercase_grid = [
+            "..........G....", ".......A.NOUN.Y", ".......L...TAME",
+            "......YEAH...E.", ".........AB.YA.", "......LOB.OWED.",
+            "..PROG..I.T.N.F", "....D..JOGS...I", "...LASSI.O..RUN",
+            ".......V.R..I..", "...C...E..HIPS.", "...A.BASE.A.E..",
+            "...R.O..D.V....", "..RENT.LITER...", ".....H..T......",
+        ]
+        lowercase_grid = uppercase_grid.copy()
+        lowercase_grid[4] = ".........ab.yA."
+        result = page.evaluate(
+            """async ({uppercaseGrid, lowercaseGrid}) => {
+              if (!await loadQuackleEngine()) throw new Error('Engine did not load');
+              const run = grid => callQuackleWorker('simulateKibitz', {
+                gridJson: JSON.stringify(grid), rack: 'IUAFTIO',
+                playerScore: 150, opponentScore: 139,
+                numMoves: 15, iterations: 1
+              });
+              return {uppercase: await run(uppercaseGrid), lowercase: await run(lowercaseGrid)};
+            }""",
+            {"uppercaseGrid": uppercase_grid, "lowercaseGrid": lowercase_grid},
+        )
+        self.assertIn("more tiles than the Crossplay distribution", result["uppercase"]["error"])
+        self.assertTrue(result["lowercase"]["simulated"])
+        self.assertEqual(result["lowercase"]["iterationsCompleted"], 1)
+        self.assertTrue(all(move["samples"] == 1 for move in result["lowercase"]["moves"]))
+        self.assertEqual(page_errors, [])
+        page.close()
+
+    def test_rack_blank_enables_quackle(self):
+        page, page_errors, _ = self.open_page()
+        page.evaluate(
+            """renderResult({
+              grid: Array(15).fill('...............'), rack: '?',
+              player_score: 0, opponent_score: 0,
+              player_name: 'You', opponent_name: 'Opponent',
+              tile_values_complete: true
+            })"""
+        )
+        self.assertFalse(page.locator("#kibitzBtn").evaluate("el => el.classList.contains('hidden')"))
+        self.assertEqual(page.evaluate("lastParsed.rack"), "?")
         self.assertEqual(page_errors, [])
         page.close()
 

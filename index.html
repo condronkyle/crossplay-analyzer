@@ -688,6 +688,69 @@ function matchGlyphDetailed(mask, w, h) {
   return { ch: best, distance: bestD };
 }
 
+// Read the small point value in a tile's top-right corner. Blank tiles show
+// exactly "0". Natural J/Q/Z tiles show "10", so the complete value must be
+// decoded before blankness is assigned.
+function readTileValue(imageData, width, x1, y1, x2, y2) {
+  const cellW = x2 - x1, cellH = y2 - y1;
+  const sx1 = Math.round(x1 + cellW * 0.48);
+  const sx2 = Math.round(x1 + cellW * 0.97);
+  const sy1 = Math.round(y1 + cellH * 0.01);
+  const sy2 = Math.round(y1 + cellH * 0.42);
+  const regionW = sx2 - sx1, regionH = sy2 - sy1;
+  if (regionW <= 0 || regionH <= 0) return null;
+
+  const white = new Uint8Array(regionW * regionH);
+  for (let y = 0; y < regionH; y++) {
+    for (let x = 0; x < regionW; x++) {
+      const i = ((sy1 + y) * width + sx1 + x) * 4;
+      const [, s, v] = rgbToHsv(imageData[i], imageData[i + 1], imageData[i + 2]);
+      // The looser saturation limit also reads the exact debug-overlay pixels.
+      if (v >= 200 && s <= 105) white[y * regionW + x] = 1;
+    }
+  }
+
+  const seen = new Uint8Array(regionW * regionH);
+  const glyphs = [];
+  for (let i = 0; i < regionW * regionH; i++) {
+    if (!white[i] || seen[i]) continue;
+    const queue = [i];
+    seen[i] = 1;
+    let minX = i % regionW, maxX = i % regionW;
+    let minY = (i / regionW) | 0, maxY = (i / regionW) | 0, size = 0;
+    while (queue.length) {
+      const p = queue.pop();
+      const px = p % regionW, py = (p / regionW) | 0;
+      size++;
+      minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nx = px + dx, ny = py + dy;
+        if (nx < 0 || nx >= regionW || ny < 0 || ny >= regionH) continue;
+        const next = ny * regionW + nx;
+        if (white[next] && !seen[next]) { seen[next] = 1; queue.push(next); }
+      }
+    }
+
+    const glyphW = maxX - minX + 1, glyphH = maxY - minY + 1;
+    if (size < 3 || minY > cellH * 0.22 ||
+        glyphH < cellH * 0.08 || glyphH > cellH * 0.32 ||
+        glyphW > cellW * 0.22) continue;
+    const mask = new Uint8Array(glyphW * glyphH);
+    for (let y = 0; y < glyphH; y++) {
+      for (let x = 0; x < glyphW; x++) {
+        mask[y * glyphW + x] = white[(minY + y) * regionW + minX + x];
+      }
+    }
+    const hit = matchGlyphDetailed(mask, glyphW, glyphH);
+    if (hit.distance < 0.40) glyphs.push({ x: minX, ch: hit.ch });
+  }
+
+  glyphs.sort((a, b) => a.x - b.x);
+  const text = glyphs.map(glyph => glyph.ch).join('');
+  return /^(?:0|[1-9]|10)$/.test(text) ? parseInt(text, 10) : null;
+}
+
 function cleanHeaderGlyph(mask, w, h) {
   // A tall digit can leave a few antialiased pixels above a touching glyph.
   // Remove only a sparse top fringe; never trim a narrow glyph such as "1".
@@ -756,7 +819,7 @@ function decodeHeaderRun(dark, width, x0, x1, y0, y1) {
   return decoded;
 }
 
-function findHeaderScoreBand(imageData, width, height, gridTop) {
+function findHeaderProjectionBands(imageData, width, height, gridTop) {
   const top = Math.max(0, Math.floor(gridTop));
   if (top < 80) return null;
   const compactHeader = top < width * 0.55;
@@ -797,7 +860,25 @@ function findHeaderScoreBand(imageData, width, height, gridTop) {
     }
   }
   if (start >= 0 && top - start >= 3) bands.push([start, top - 1]);
-  if (!bands.length) return null;
+  const minBandHeight = Math.max(8, Math.round(width * 0.018));
+  const maxBandHeight = Math.max(50, Math.round(width * 0.065));
+  return { top, bands, minBandHeight, maxBandHeight };
+}
+
+function cropHeaderScoreBand(band, top, width, maxBandHeight) {
+  const bandH = band[1] - band[0] + 1;
+  const maxScoreLineHeight = Math.max(24, Math.round(width * 0.036));
+  const bandEnd = bandH > maxBandHeight
+    ? Math.min(top - 1, band[0] + maxScoreLineHeight)
+    : band[1];
+  const padding = Math.max(2, Math.round(width * 0.0025));
+  return [Math.max(0, band[0] - padding), Math.min(top - 1, bandEnd + padding)];
+}
+
+function findHeaderScoreBand(imageData, width, height, gridTop, projection = null) {
+  const info = projection || findHeaderProjectionBands(imageData, width, height, gridTop);
+  if (!info || !info.bands.length) return null;
+  const { top, bands, minBandHeight, maxBandHeight } = info;
 
   // The score is the UPPER member of the adjacent score/name pair. The
   // original scaffold selected the lower band, which is the player name
@@ -806,20 +887,20 @@ function findHeaderScoreBand(imageData, width, height, gridTop) {
     const gap = bands[i + 1][0] - bands[i][1] - 1;
     const upperH = bands[i][1] - bands[i][0] + 1;
     const lowerH = bands[i + 1][1] - bands[i + 1][0] + 1;
-    if (gap >= 3 && gap <= 45 && upperH >= 15 && upperH <= 50 && lowerH >= 15 && lowerH <= 50) {
-      return [Math.max(0, bands[i][0] - 2), Math.min(top - 1, bands[i][1] + 2)];
+    if (gap >= 3 && gap <= 45 &&
+        upperH >= minBandHeight && upperH <= maxBandHeight &&
+        lowerH >= minBandHeight && lowerH <= maxBandHeight) {
+      return cropHeaderScoreBand(bands[i], top, width, maxBandHeight);
     }
   }
   // Post-game headers can merge the score and name into one tall band. Ignore
   // the status and result text above it and choose the last substantial band.
-  const band = [...bands].reverse().find(b => b[1] - b[0] + 1 >= 15) || bands[bands.length - 1];
-  // The score is its upper line, approximately one glyph height tall.
-  const bandH = band[1] - band[0] + 1;
-  const bandEnd = bandH > 50 ? Math.min(top - 1, band[0] + 42) : band[1];
-  return [Math.max(0, band[0] - 2), Math.min(top - 1, bandEnd + 2)];
+  const band = [...bands].reverse().find(b => b[1] - b[0] + 1 >= minBandHeight)
+    || bands[bands.length - 1];
+  return cropHeaderScoreBand(band, top, width, maxBandHeight);
 }
 
-function decodeHeaderSide(dark, width, x0, x1, y0, y1) {
+function decodeHeaderSideDetailed(dark, width, x0, x1, y0, y1) {
   const colProj = new Uint16Array(x1 - x0);
   for (let x = x0; x < x1; x++) {
     let count = 0;
@@ -869,12 +950,13 @@ function decodeHeaderSide(dark, width, x0, x1, y0, y1) {
   finish();
   if (!candidates.length) return null;
   candidates.sort((a, b) => a.distance / a.digits - b.distance / b.digits);
-  return candidates[0].text;
+  return {
+    text: candidates[0].text,
+    averageDistance: candidates[0].distance / candidates[0].digits
+  };
 }
 
-function readHeaderScores(imageData, width, height, gridTop) {
-  const band = findHeaderScoreBand(imageData, width, height, gridTop);
-  if (!band) return { player: null, opponent: null };
+function decodeHeaderScoreBand(imageData, width, height, band) {
   const dark = new Uint8Array(width * height);
   for (let y = band[0]; y <= band[1]; y++) {
     for (let x = 0; x < width; x++) {
@@ -888,8 +970,60 @@ function readHeaderScores(imageData, width, height, gridTop) {
   const opponentX0 = Math.floor(width * (postGame ? 0.68 : 0.65));
   const opponentX1 = Math.floor(width * (postGame ? 0.82 : 0.90));
   return {
-    player: decodeHeaderSide(dark, width, playerX0, playerX1, band[0], band[1]),
-    opponent: decodeHeaderSide(dark, width, opponentX0, opponentX1, band[0], band[1])
+    player: decodeHeaderSideDetailed(dark, width, playerX0, playerX1, band[0], band[1]),
+    opponent: decodeHeaderSideDetailed(dark, width, opponentX0, opponentX1, band[0], band[1])
+  };
+}
+
+function readHeaderScores(imageData, width, height, gridTop) {
+  const projection = findHeaderProjectionBands(imageData, width, height, gridTop);
+  if (!projection || !projection.bands.length) return { player: null, opponent: null };
+  const preferred = findHeaderScoreBand(imageData, width, height, gridTop, projection);
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = band => {
+    if (!band) return;
+    const key = band.join(':');
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(band);
+  };
+  addCandidate(preferred);
+  for (const band of projection.bands) {
+    if (band[1] - band[0] + 1 >= projection.minBandHeight) {
+      addCandidate(cropHeaderScoreBand(
+        band, projection.top, width, projection.maxBandHeight));
+    }
+  }
+
+  let preferredResult = null;
+  const complete = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const decoded = decodeHeaderScoreBand(imageData, width, height, candidates[i]);
+    const isComplete = decoded.player && decoded.opponent &&
+      /^\d{1,3}$/.test(decoded.player.text) && /^\d{1,3}$/.test(decoded.opponent.text);
+    if (i === 0) {
+      preferredResult = decoded;
+      if (isComplete) {
+        return { player: decoded.player.text, opponent: decoded.opponent.text };
+      }
+    } else if (isComplete) {
+      complete.push({
+        decoded,
+        averageDistance: (decoded.player.averageDistance + decoded.opponent.averageDistance) / 2
+      });
+    }
+  }
+  if (complete.length) {
+    complete.sort((a, b) => a.averageDistance - b.averageDistance);
+    return {
+      player: complete[0].decoded.player.text,
+      opponent: complete[0].decoded.opponent.text
+    };
+  }
+  return {
+    player: preferredResult?.player?.text || null,
+    opponent: preferredResult?.opponent?.text || null
   };
 }
 
@@ -1392,21 +1526,31 @@ async function analyzeOffline(imageSource) {
   debugLog += `Rack tiles detected: ${rackTileBoxes.length}\n`;
   setStatus(`Reading ${tilePositions.length + rackTileBoxes.length} tile letters (deterministic OCR)...`, 'loading');
 
-  // Step 6b: Deterministic letter OCR — template matching, no API key.
-  // Read each board tile's letter, then each rack tile's letter.
+  // Step 6b: Read each tile's main letter and point-value superscript from the
+  // raw pixels. A value of zero identifies a physical blank assigned to the
+  // visible main letter.
   const letterMap = {};
+  const tileValueMap = {};
   let unrecognized = 0;
+  let unrecognizedValues = 0;
   for (const tp of tilePositions) {
     const label = `${tp.row + 1}${String.fromCharCode(65 + tp.col)}`;
     const letter = readTileLetter(pixels, w, tp.x1, tp.y1, tp.x2, tp.y2);
+    const value = readTileValue(pixels, w, tp.x1, tp.y1, tp.x2, tp.y2);
     letterMap[label] = letter || '?';
+    tileValueMap[label] = value;
     if (!letter) unrecognized++;
+    if (value === null) unrecognizedValues++;
   }
   for (let i = 0; i < rackTileBoxes.length; i++) {
     const box = rackTileBoxes[i];
     const letter = readTileLetter(pixels, w, box.x1, box.y1, box.x2, box.y2);
+    const value = readTileValue(pixels, w, box.x1, box.y1, box.x2, box.y2);
     letterMap[`R${i + 1}`] = letter || '?';
-    if (!letter) unrecognized++;
+    tileValueMap[`R${i + 1}`] = value;
+    // A rack blank has no assigned main letter, so its zero value is enough.
+    if (!letter && value !== 0) unrecognized++;
+    if (value === null) unrecognizedValues++;
   }
 
   debugLog += `Deterministic OCR: ${tilePositions.length + rackTileBoxes.length} tiles read, ${unrecognized} unrecognized.\n`;
@@ -1420,7 +1564,9 @@ async function analyzeOffline(imageSource) {
     const label = `${tp.row + 1}${String.fromCharCode(65 + tp.col)}`;
     const letter = letterMap[label];
     if (letter && letter.length === 1 && /[A-Za-z]/.test(letter)) {
-      boardGrid[tp.row][tp.col] = letter;
+      boardGrid[tp.row][tp.col] = tileValueMap[label] === 0
+        ? letter.toLowerCase()
+        : letter.toUpperCase();
     } else {
       boardGrid[tp.row][tp.col] = '?';
       missedTiles++;
@@ -1432,7 +1578,9 @@ async function analyzeOffline(imageSource) {
   for (let i = 0; i < rackTileBoxes.length; i++) {
     const label = `R${i + 1}`;
     const letter = letterMap[label];
-    if (letter && letter.length === 1 && /[A-Za-z]/.test(letter)) {
+    if (tileValueMap[label] === 0) {
+      rack += '?';
+    } else if (letter && letter.length === 1 && /[A-Za-z]/.test(letter)) {
       rack += letter.toUpperCase();
     } else {
       rack += '?';
@@ -1440,6 +1588,12 @@ async function analyzeOffline(imageSource) {
   }
 
   const gridStrings = boardGrid.map(row => row.join(''));
+  const blankPositions = [];
+  for (const tp of tilePositions) {
+    const label = `${tp.row + 1}${String.fromCharCode(65 + tp.col)}`;
+    if (tileValueMap[label] === 0) blankPositions.push(label);
+  }
+  debugLog += `Tile value OCR: ${unrecognizedValues} unrecognized; blanks: ${blankPositions.join(', ') || 'none'}.\n`;
 
   // Step 7b: Read the two dark score bands above the board using fully
   // local/deterministic OCR. A null score means the screenshot did not
@@ -1452,11 +1606,16 @@ async function analyzeOffline(imageSource) {
   debugLog += `Header score OCR: ${headerScores.player || '?'} vs ${headerScores.opponent || '?'}\n`;
   document.getElementById('debugLog').textContent = debugLog;
 
-  setStatus(`Offline parsing complete: ${tilePositions.length} tiles, ${missedTiles} unrecognized.`, 'done');
+  const valueStatus = unrecognizedValues
+    ? `, ${unrecognizedValues} unreadable tile values`
+    : '';
+  setStatus(`Offline parsing complete: ${tilePositions.length} tiles, ${missedTiles} unrecognized${valueStatus}.`, 'done');
 
   return {
     grid: gridStrings,
     rack,
+    blank_positions: blankPositions,
+    tile_values_complete: unrecognizedValues === 0,
     player_score: playerScore,
     opponent_score: opponentScore,
     player_name: 'You',
@@ -1601,7 +1760,10 @@ function renderResult(parsed) {
 
   document.getElementById('kibitzBtn').classList.add('hidden');
   lastParsed = null;
-  if (/^[A-Z]{1,7}$/.test(parsed.rack || '')) {
+  if (parsed.tile_values_complete === false) {
+    document.getElementById('engineStatus').textContent =
+      'Tile values are incomplete. Quackle is disabled to avoid incorrect blank usage.';
+  } else if (/^[A-Z?]{1,7}$/.test(parsed.rack || '')) {
     document.getElementById('kibitzBtn').classList.remove('hidden');
     lastParsed = parsed;
   }

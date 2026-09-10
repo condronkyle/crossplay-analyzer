@@ -14,6 +14,10 @@
   .input-row input { flex: 1; min-width: 200px; padding: 10px 14px; border: 1px solid #333; border-radius: 6px; background: #16213e; color: #e0e0e0; font-size: 0.95rem; }
   .input-row input:focus { outline: none; border-color: #4a6fa5; }
   button { padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.95rem; cursor: pointer; font-weight: 600; }
+  .file-picker { display: inline-block; padding: 10px 20px; border-radius: 6px; background: #25375b; color: #fff; font-size: 0.95rem; font-weight: 600; cursor: pointer; text-align: center; }
+  .file-picker:hover { background: #30466f; }
+  .file-picker:focus-within { outline: 2px solid #4a6fa5; outline-offset: 2px; }
+  .file-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   #analyzeBtn { background: #4a6fa5; color: #fff; }
   #analyzeBtn:hover { background: #5a7fb5; }
   #analyzeBtn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -75,16 +79,18 @@
 <body>
 <div class="container">
   <h1>Crossplay Board Analyzer</h1>
-  <p class="subtitle">Paste a screenshot URL or drop an image to parse the board and find all words.</p>
+  <p class="subtitle">Choose a screenshot, paste a URL, or drop an image to parse the board and find all words.</p>
 
 
   <div class="input-row">
     <input type="text" id="imageUrlInput" placeholder="Paste image URL (imgur, etc.)" />
+    <label class="file-picker" for="imageFileInput">Choose from Photo Library</label>
+    <input class="file-input" type="file" id="imageFileInput" accept="image/*" />
     <button id="analyzeBtn" onclick="analyze()">Analyze Board</button>
   </div>
 
   <div class="drop-zone" id="dropZone">
-    Or drag & drop / paste (Ctrl+V) a screenshot here
+    Or drag & drop / paste a screenshot here
   </div>
 
   <div id="status"></div>
@@ -145,6 +151,13 @@ function setStatus(msg, cls) {
 let base64Image = null;
 
 const dropZone = document.getElementById('dropZone');
+const imageFileInput = document.getElementById('imageFileInput');
+
+imageFileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) loadFile(file);
+});
+
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
@@ -170,6 +183,7 @@ function loadFile(file) {
     base64Image = { data: reader.result.split(',')[1], media_type: file.type };
     document.getElementById('imageUrlInput').value = '';
     dropZone.textContent = 'Image loaded: ' + file.name + ' (' + Math.round(file.size/1024) + ' KB)';
+    imageFileInput.value = '';
     setStatus('Image ready. Click Analyze Board.', 'done');
   };
   reader.readAsDataURL(file);

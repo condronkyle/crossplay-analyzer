@@ -884,6 +884,16 @@ class BrowserPipelineTest(unittest.TestCase):
         self.assertEqual(page_errors, [])
         page.close()
 
+    def test_photo_library_input(self):
+        page, page_errors, _ = self.open_page()
+        fixture = "test_board.png"
+        page.locator("#imageFileInput").set_input_files(str(ROOT / fixture))
+        page.wait_for_function("document.getElementById('status').textContent.includes('Image ready')")
+        self.wait_for_analysis(page)
+        self.assertEqual(page.locator("#tileCount").text_content(), "31")
+        self.assertEqual(page_errors, [])
+        page.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
